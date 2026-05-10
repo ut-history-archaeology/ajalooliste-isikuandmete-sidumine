@@ -1,0 +1,1304 @@
+---
+title: "III osa"
+output: html_document
+date: "2025-10-16"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(readr)
+```
+
+# 3. osa - Seotud tulemuste hindamine
+
+Optantide andmestik on ühendatud tunnuste "sugu" ja "sunniaasta" järgi
+pereregistri (PR) ja rahvastiku registri (RR) andmesitikega. Tulemusi on
+hinnatud pere- ja eesnime kattuvuse järgi. Kuna optantide andmestikus on
+kirjas vanus mitte sünniaasta, siis on ühendatud kolmel viisil - algne
+sünniaasta, miinus 1 ja pluss 1 aasta. See teeb 3 varianti PR ja RR
+puhul. Kokku 6 varianti, kuid siia lisandub veel üks, sest osad (ca 1/3)
+RR andmed on ilma aastata ja nii on lisatud veel üks optandid+RR
+sidumine. Selle variandi juures on seotud tunnuse sugu ja eesnimi
+alusel. Ühenduse hindamiseks on võrreldud perenimede ühtimist. Vastava
+sidumise tegin ainult nendele nimedele, kes ei saanud eelneva 3
+sidumisega RR'is tugevat seost. Seega on iga isiku kohta võimalik kuni 7
+seost. Kõik eelnevas etapis tehtud sidumistulemused on omavahel
+ühendatud - need on vahetulemuseks. Ning selles vahetulemuse andmestikus
+on enamus optantidel 6-7 vastet.
+
+Selle etapi eesmärk on sidumistulemuste koondamine ja kvaliteedi
+hindamise ettevalmistus.
+
+1.  eemaldasin väga madala tõenäosusega vasted ja need kirjed, kus nimed
+    puudusid, et vähendada selgelt vigaste seoste hulka.
+
+2.  ühtlustasin täiendavalt nimedekirjapilti, et vähendada
+    ortograafilist varieeruvust.
+
+3.  lisasin abitunnuseid:
+
+    -   nimede kattuvus (eesnimi ja perenimi),
+
+    -   sidumiste arv iga isiku kohta
+
+    -   täieliku kattuvuse tunnus (sidumine1_1)
+
+    -   tugev seos (määrad on valitud käsitsi vaadates sidumistulemusi
+        ja hinnates tulemusi pere- ja eesnime kaalusid eraldi seisvalt)
+
+## 1. Eeltööd andestike ühendamine
+### 1.1 Abifunktsioonid
+
+```{r}
+# Funktsioon, mis lisab millise sünnuaasta variandi järgi toimus sidumine
+lisa_sidumis_aasta <- function(df) {
+  df %>%
+    mutate(sidumis_aasta = case_when(
+      !is.na(sunniaasta.y) ~ "algne",
+      !is.na(sunniaasta_m1.y) ~ "m1",
+      !is.na(sunniaasta_p1.y) ~ "p1",
+      TRUE ~ "ilma_aasta"
+    ))
+}
+```
+
+### 1.2 Andmete laadimine ja sidumiste märgistamine (lisan tunnused, mis näitavad mis andmestikuga toimus sidumine (rr ja pr) ja sidumisaastat (algne, +1, -1, ilma aastata))
+
+```{r}
+# RR sidumised - siin on koos eelnevalt loodud rr failid: koos,koos1,koos2 - kokku 107 638 kirjet
+rr_sidumine <- readRDS("rr_sidumine_3tk_erisynniaeg.rds") %>%
+  mutate(sidumine = "rr") %>%
+  lisa_sidumis_aasta()
+
+#rr sidumine ilma aastata: koos3 - kokku 24153 kirjet
+rr_sidumine_ilma_aastata <- readRDS("rr_sidumine_ilma_aastata.rds") %>%
+  mutate(sidumine = "rr", sidumis_aasta = "ilma_aasta")
+
+# PR sidumised - siin on koos eelnevalt loodud pr failid: koos,koos1,koos2 - kokku 107 559 kirjet
+pr_sidumine <- readRDS("pr_sidumine_3tk_erisynniaeg.rds") %>%
+  mutate(sidumine = "pr") %>%
+  lisa_sidumis_aasta()
+```
+
+### 1.3. Sidumiste ühendamine ja esmane filtreerimine
+
+Ühendan kõik RR ja PR saadud seosed.
+
+Eemaldan väga madala ühendusega saanud isikud ehk kindlalt valed seosed.
+
+```{r}
+# Ühendan kõik sidumised
+sidumised_kokku <- bind_rows(rr_sidumine, rr_sidumine_ilma_aastata, pr_sidumine) %>%
+  arrange(id) %>%
+  mutate(id_sidumine = row_number()) %>%
+  filter(weights > 0.2)
+
+# Eemaldan kirjed, kus nimed puuduvad (vältimaks selgelt vigaseid seoseid).
+# Kogemata on eelnevalt ununenud eemaldada need read, kus eesnimi või perenimi on puudu isikul, sidumistulemustes kokku 62 juhtumit.
+sidumised_kokku <- sidumised_kokku %>%
+  filter(!is.na(perenimi1.x) & !is.na(perenimi1.y) & !is.na(eesnimi1.x) & !is.na(eesnimi1.y)  )
+
+```
+
+### 1.4 Nimede standardiseerimine
+
+```{r}
+# Funktsioon tähemärkide ühtlustamiseks
+teisenda_eesti_tahed <- function(x) {
+  x <- str_replace_all(x, "Á|Ã|Å", "A")
+  x <- str_replace_all(x, "É|È", "E")
+  x <- str_replace_all(x, "Č", "C")
+  x <- str_replace_all(x, "Ð", "D")
+  x <- str_replace_all(x, "Š", "S")
+  x <- str_replace_all(x, "Ž|Ź", "Z")
+  x <- str_replace_all(x, "W", "V")
+  x <- str_replace_all(x, "Œ", "OE")      
+  x <- str_replace_all(x, "Þ", "T")
+   x <- str_replace_all(x, "Ū", "U")
+  return(x)
+}
+
+# Rakendan standardiseerimist nimedele
+sidumised_kokku <- sidumised_kokku %>%
+  mutate(
+    eesnimi1.x = teisenda_eesti_tahed(eesnimi1.x),
+    eesnimi1.y = teisenda_eesti_tahed(eesnimi1.y),
+    perenimi1.x = teisenda_eesti_tahed(perenimi1.x),
+    perenimi1.y = teisenda_eesti_tahed(perenimi1.y)
+  )
+```
+
+### 1.5 Salvestan ühendatud koondandmestiku 
+
+Tulemuseks on koondatud sidumiste andmestik, kus on loodud optantide ja 
+PR ning RR andmestiku vahel kokku 230 546 seost. Kasutan seda edasiseks 
+kvaliteedi hindamiseks
+```{r}
+saveRDS(sidumised_kokku, "kooskoos_koik_yhendused.rds")
+```
+
+## 2. Abitunnuste lisamine sidumiste hindamiseks
+
+### 2.1 Andmete laadimine
+Laen sidumiste vahetulemuse, mis sisaldab kõiki kandidaatvasteid
+
+```{r}
+kooskoos <- readRDS("kooskoos_koik_yhendused.rds")
+```
+
+### 2.2 Nimede kattuvuse hindamine
+
+```{r}
+# Kontrollin, kas ees- ja perenimed kattuvad täpselt
+kooskoos <- kooskoos %>%
+  mutate(eesnimi_kattub = eesnimi1.x == eesnimi1.y)%>%
+  mutate(perenimi_kattub = perenimi1.x == perenimi1.y)
+
+# Parandan juhtumid, kus nimed tegelikult kattuvad,
+# kuid varasemas etapis ei ole see kajastunud andmete mitte piisava ühtlustamise tõttu
+kooskoos <- kooskoos %>%
+  mutate(
+    eesnimi1 = if_else(eesnimi_kattub, 1, eesnimi1),
+    perenimi1 = if_else(perenimi_kattub, 1, perenimi1)
+  )
+```
+
+### 2.3 Sidumiste arvu arvutamine
+```{r}
+# Loen, mitu kandidaatvastet on iga isiku (id) kohta
+kooskoos<-kooskoos%>%
+  group_by(id)%>%
+  mutate(sidumiste_arv=n())%>% 
+  ungroup()
+```
+
+### 2.4 Täielike üks ühele kattuvate seoste määramine
+```{r}
+# Märgin juhud, kus ees- ja perenimi kattuvad täielikult
+# või erijuhtudel (ilma sünniaastata sidumine) kattub perenimi -> sidumine1_1
+
+kooskoos <- kooskoos%>%
+  mutate(
+    sidumine1_1 = case_when(
+      eesnimi1 == 1 & perenimi1 == 1 ~ 1,
+      sidumis_aasta == "ilma_aasta" & perenimi1 == 1 ~ 1,
+      TRUE ~ 0))
+
+# Kontroll: mitu täielikku seost
+table(kooskoos$sidumine1_1)
+#Kokku on selliseid ühendatud paare 24144 tk.
+```
+
+### 2.5 Tugevate seoste määramine
+
+Sidumise II etapis hindasin, kust maalt võib lugeda tõenäosuslikkuse kaalu
+(tabelis tunnusena "weights") väärtuse, mis viitab tugevale soesel. Seda
+vaatasin perenime ja eesnime kombinatsiooni arvestades. See tähendab, et
+perenime nime variatsioon võib olla üsna madal ehk "weights" peab olema
+väga kõrge. Eesnimedes on lubatud rohkem varieeruvust ja selle "weights"
+võib olla veidi madalam.
+
+1.	Mitte kattuvate ees- ja perenimede tugevad seosed (käsitsi valideeritud)
+Tugevate seoste, kus nimed ei kattunud täielikult, määrasin piiri, millest alates võib kirjepaari pidada piisavalt usaldusväärseks. Selleks lähtusin EM-algoritmi poolt arvutatud tõenäosuslikust kaalust (weights), mis põhineb ees- ja perekonnanime sarnasusel, mille arvutamiseks kasutati Jaro–Winkleri meetodit. Sellel meetodil arvuatud kõrge tõenäosusliku kaalu hulka võisid kuuluda ka sellised vasted, kus kumbki nimeline tunnus ei kattunud täielikult. Tugevate seoste piiramiseks hindasin ainult neid kirjepaare, kus vähemalt üks nimeline tunnus – eesnimi või perekonnanimi – kattus täielikult, tagades seeläbi hinnangu „tugev seos“ usaldusväärsuse.
+
+Tugevate seoste eristamisel kasutasin täieliku nimekattuvuse ja tõenäosusliku kaalu kombinatsiooni. Vaadeldes ja analüüsides sidumistulemustes esinevaid ees- ja perekonnanime kombinatsioone järjestades vastused nimede sarnasuse järgi alates tugevamatest määrasin ära piiri millise „weights“ väärtuse juures hakkasid esinema sisuliselt ebatõenäolised vasted. Selle põhjal määrasin piirid, millest kõrgema väärtusega seoseid käsitlesin tugevatena. Vastavad piirid määrasin eraldi lähtudes kõige pealt et perenimed kattuks ja siis vaatasin kust jookseb piir eesnimede sisulise kattuvuse vahel. Seejärel kordasin vastupidi, et seadsin tingimuseks et eesnimi pidi kattuma ja vaatasin perenimesid. Lävede seadmisel arvestasin ees- ja perekonnanime erinevat informatiivsust: perekonnanime puhul rakendasin rangemaid tingimusi, samas kui eesnimede puhul lubasin suuremat varieeruvust.
+
+
+```{r}
+#Määran "tugevad seosed" tõenäosusliku kaalu (weights) ja nimekattuvuse põhjal
+#Läved on määratud empiirilise vaatlusena ning arvestavad ees- ja perenime erinevat informatiivsust
+
+kooskoos <- kooskoos %>%
+  mutate(
+    tugev_seos = case_when(
+      perenimi1 == 1 & weights > 4.5 & sidumine == "rr" & sidumis_aasta == "algne" ~ "tugev seos",
+      eesnimi1 == 1 & weights > 3.89 & sidumine == "rr" & sidumis_aasta == "algne" ~ "tugev seos",
+      perenimi1 == 1 & weights > 4.429 & sidumine == "rr" & sidumis_aasta == "m1" ~ "tugev seos",
+      eesnimi1 == 1 & weights > 3.886 & sidumine == "rr" & sidumis_aasta == "m1" ~ "tugev seos",
+      perenimi1 == 1 & weights > 3.977 & sidumine == "rr" & sidumis_aasta == "p1" ~ "tugev seos",
+      eesnimi1 == 1 & weights > 3.862 & sidumine == "rr" & sidumis_aasta == "p1" ~ "tugev seos",
+      perenimi1 == 1 & weights > 0.589& sidumine == "rr" & sidumis_aasta == "ilma_aasta" ~ "tugev seos",
+      perenimi1 == 1 & weights > 4.533136 & sidumine == "pr" & sidumis_aasta == "algne" ~ "tugev seos",
+      eesnimi1 == 1 & weights > 3.833535 & sidumine == "pr" & sidumis_aasta == "algne" ~ "tugev seos",
+      perenimi1 == 1 & weights > 4.121349 & sidumine == "pr" & sidumis_aasta == "m1" ~ "tugev seos",
+      eesnimi1 == 1 & weights > 3.838240 & sidumine == "pr" & sidumis_aasta == "m1" ~ "tugev seos",
+      perenimi1 == 1 & weights > 3.494354 & sidumine == "pr" & sidumis_aasta == "p1" ~ "tugev seos",
+      eesnimi1 == 1 & weights > 3.796374 & sidumine == "pr" & sidumis_aasta == "p1" ~ "tugev seos",
+      TRUE ~ NA_character_
+    )
+  )
+
+# Kontroll: tugevate seoste jaotus
+table(kooskoos$tugev_seos)
+```
+
+### 2.6 Ülevaade sidumistulemustest
+
+Teen ülevaate kuidas jaotuvad sidumiste tulemused vastavalt tunnustele:
+"sidumis_aasta", "sidumine1_1", "sidumiste_arv", "tugev_seos"
+
+```{r}
+#ühend tunnuste kuvamis tabel
+tunnused <- c("sidumis_aasta", "sidumine1_1", "sidumiste_arv", "tugev_seos")
+
+tabel <- map_df(tunnused, function(var) {
+  kooskoos %>%
+    mutate(across(all_of(var), as.character)) %>%   #muudan väärtused tekstiks
+    count(vaartus = !!sym(var), sidumine, name = "n") %>%
+    mutate(tunnus = var)
+}) %>%
+  pivot_wider(
+    names_from = sidumine,
+    values_from = n,
+    values_fill = 0
+  ) %>%
+  mutate(kokku = rowSums(across(where(is.numeric)))) %>%
+  select(tunnus, vaartus, everything())
+```
+
+## 3.  Lõplik sidumise kvaliteedi hindamine
+### 3.1. Täielike (1:1) seoste analüüs
+
+```{r}
+# Eesmärk: tuvastada juhud, kus ees- ja perenimi kattuvad täielikult
+# ning hinnata nende esinemissagedust isiku (id) lõikes
+
+#lisan tulba taileik_seos, kus on kirjas arv mitu 1:1-le seost on ühe id kohta.
+kooskoos <- kooskoos%>%
+  group_by(id)%>%
+  mutate(taielik_seos= sum(sidumine1_1==1, na.rm = TRUE))%>%
+  ungroup()
+
+# Kontroll: täielike seoste arv isiku kohta
+taielik_seos_per_isik <- kooskoos %>%
+  group_by(id) %>%
+  summarise(taielik_seos = sum(sidumine1_1 == 1, na.rm = TRUE)) %>%
+  ungroup()
+
+table(taielik_seos_per_isik$taielik_seos)
+table(kooskoos$taielik_seos)
+
+# Tulemustest on näha, et enim on saanud isikud kindla 1:1-le seose kas
+# ühe või kahe erineva ühendamise käigus. Hindasin õigeks ja lisan
+# sellised seosed tulpa sidumine_korras_1_1le.:
+# 
+# -   isikud kellel on vaid 1 täielik seos loen automaatselt õigeks.
+# 
+# -   Isikud kellel on kaks täielikku seost, mis on pärit eri
+#     andmestikest, loen täielikult õigeks.
+# 
+# -   Isikud, kellel on kolm täielikku ühendust, nende seast valin välja
+#     need juhud, kus kaks ühendust on sama aastaga ja samas pärit
+#     erinevast andmestikust.
+
+
+#Täielike seoste klassifitseerimine
+kooskoos <- kooskoos %>%
+  mutate(
+    sidumine_korras_1_1le = case_when(
+      taielik_seos == 1 & sidumine1_1 == 1 ~ "1 täielik seos ID kohta",
+      taielik_seos == 2 & sidumine1_1 == 1 ~ "2 täielikku seost ID kohta",
+      taielik_seos == 3 & sidumine1_1 == 1 ~ "3 täielikku seost ID kohta",
+      taielik_seos == 4 & sidumine1_1 == 1 ~ "4 või enam täielikku seost ID kohta",
+      taielik_seos == 5 & sidumine1_1 == 1 ~ "4 või enam täielikku seost ID kohta",
+      taielik_seos == 6 & sidumine1_1 == 1 ~ "4 või enam täielikku seost ID kohta",
+      taielik_seos == 7 & sidumine1_1 == 1 ~ "4 või enam täielikku seost ID kohta",
+      # Vaikimisi (kõik muud juhud)
+      TRUE ~ NA_character_))
+
+
+# Kontroll: kas kahe täieliku seosega juhtumid pärinevad eri andmestikest
+kahe_täieliku_seosega <- kooskoos %>%
+  filter(sidumine_korras_1_1le=="2 täielikku seost ID kohta")%>%
+  group_by(id) %>%
+  filter(n_distinct(sidumine) == 2 ) %>%
+  ungroup() #9960 rida
+
+# Kolme seosega juhtumid – sama aasta ja eri andmestikud ehk filtreeritud need 3 seosega, kus kahel on sama aastaarv (sellisel juhul on nad ka juba kindlalt pärit eri andmestikest).
+filtreeritud3 <- kooskoos %>%
+  filter(sidumine_korras_1_1le == "3 täielikku seost ID kohta") %>%
+  group_by(id, sidumis_aasta) %>%
+  filter(n() == 2) %>%
+  ungroup() #1216 rida
+
+# Lõplik otsus 1:1 seoste põhjal
+#õiged on need kelle 1 täielik seos ja filtreeritud gruppid: kahe_täieliku_seosega ja filtreeritud3.
+kooskoos <- kooskoos %>%
+  mutate(sidumine_korras_loplik = case_when(
+    # 1-seose read
+    sidumine_korras_1_1le == "1 täielik seos ID kohta" ~ sidumine_korras_1_1le,
+    
+    # 2-seose read, ainult nende ID-de puhul, mis on kahe_täieliku_seosega
+    sidumine_korras_1_1le == "2 täielikku seost ID kohta" & id %in% kahe_täieliku_seosega$id ~ sidumine_korras_1_1le,
+    
+    # 3-seose read, ainult nende ID-de ja aasta kombinatsioonide puhul, mis on filtreeritud3
+    sidumine_korras_1_1le == "3 täielikku seost ID kohta" & id %in% filtreeritud3$id ~ sidumine_korras_1_1le,
+    # kõik ülejäänud jääb NA
+    TRUE ~ NA_character_))
+
+# Kontroll tabelina
+table(kooskoos$sidumine_korras_loplik)
+
+kooskoos <- kooskoos %>%
+  mutate(
+    sidumine_korras_loplik = case_when(
+      
+      # 2 täielikku seost samast andmestikust → eemaldatakse
+      is.na(sidumine_korras_loplik) & 
+        sidumine_korras_1_1le == "2 täielikku seost ID kohta" ~ 
+        "jääb välja_2 täielikku vastet samast andmestikust",
+      
+      # 3 täielikku seost (ebaselge)
+      is.na(sidumine_korras_loplik) & 
+        sidumine_korras_1_1le == "3 täielikku seost ID kohta" ~ 
+        "jääb välja_3 täielikku vastet",
+      
+      # 4 või enam täielikku seost
+      is.na(sidumine_korras_loplik) & 
+        sidumine_korras_1_1le == "4 või enam täielikku seost ID kohta" ~ 
+        "jääb välja_4+ täielikku vastet",
+      
+      TRUE ~ sidumine_korras_loplik
+    )
+  )
+
+# Kontroll tabelina
+table(kooskoos$sidumine_korras_loplik)
+```
+
+### 3.2. Madala sidumiste arvuga juhtumid
+
+Vaatan tulemusi lähtuvalt seoste arvust. Reaalsus on see, et valdavalt
+said isikud tulemuse kõigi sidumistega, sest siin on kaasa arvatud ka
+need ühendused, kus skoor on väga madal. Tulemused, kus on seoste arv
+2-3 on väga vähe ja need on käsitsi kõik üle kontrollitud ja märgitud
+kas õige või vale ühendus.
+
+```{r}
+# 2 seost on 2 isikul: nende seas üks õige ja kolm vale
+# 3 seost on 1 isikul: kõik need on valed
+
+kooskoos <- kooskoos %>%
+  mutate(sidumine_korras_loplik = case_when(
+    is.na(sidumine_korras_loplik) & sidumiste_arv == 2 & sidumine1_1 == 1 ~ "õige",
+    is.na(sidumine_korras_loplik) & sidumiste_arv == 2 & sidumine1_1 == 0 ~ "vale",
+    is.na(sidumine_korras_loplik) & sidumiste_arv == 3 ~ "vale",
+    TRUE ~ sidumine_korras_loplik  
+  ))
+
+# Tulemuste kokkuvõte
+table(kooskoos$sidumine_korras_loplik)
+```
+
+### 3.3 Tugevad seosed
+
+Hindan tugevaid seoseid sarnaselt täielike seoste skeemile
+
+```{r}
+#lisan tulba tugev_seos_arv, kus on kirjas arv mitu tugevat seost on ühe id kohta.
+  kooskoos <- kooskoos %>%
+  group_by(id) %>%
+  mutate(tugev_seos_arv = sum(tugev_seos == "tugev seos", na.rm = TRUE)) %>%
+  ungroup()
+
+table(kooskoos$tugev_seos_arv)
+
+# Arvutan iga isiku kohta, mitu tugevat seost tal on
+tugev_seos_per_isik <- kooskoos %>%
+  group_by(id) %>%
+  summarise(tugev_seos_arv = sum(tugev_seos == "tugev seos", na.rm = TRUE)) %>%
+  ungroup()
+
+#ülevaade
+table(tugev_seos_per_isik$tugev_seos_arv)
+
+# Ühe tugeva seosega juhtumid
+ühe_tugeva_seosega <- kooskoos %>%
+  filter(tugev_seos=="tugev seos")%>%
+  filter(tugev_seos_arv == 1)%>%
+  mutate(sidumine_korras_tugev="tugev seos 1")#4897 rida
+
+# Kahe tugeva seosega eri andmestikes
+kahe_tugeva_seosega <- kooskoos %>%
+  filter(tugev_seos == "tugev seos", tugev_seos_arv == 2) %>%
+  group_by(id) %>%
+  filter(n_distinct(sidumine) == 2 ) %>%
+  ungroup()%>% 
+  mutate(sidumine_korras_tugev="tugev seos 2") #3040 rida
+
+# kombineerin tugevad seosed
+tugevad_ok <- bind_rows(ühe_tugeva_seosega, kahe_tugeva_seosega) %>%
+  select(id, sidumis_aasta, sidumine, sidumine_korras_tugev)
+
+# lisan tulemustesse tugeva seosega isikud
+kooskoos <- kooskoos %>%
+  left_join(
+    tugevad_ok %>% mutate(flag_tugev = TRUE),
+    by = c("id", "sidumis_aasta", "sidumine")
+  ) %>%
+  mutate(
+    sidumine_korras_loplik = case_when(
+      is.na(sidumine_korras_loplik) & flag_tugev ~ sidumine_korras_tugev,
+      TRUE ~ sidumine_korras_loplik
+    )
+  ) %>%
+  select(-flag_tugev)
+
+# Tulemuste kokkuvõte
+table(kooskoos$sidumine_korras_loplik)
+```
+
+### 3.4 Nime variatsioonidega arvestamine: topelttähed
+
+Eesmärk: tuvastada juhtumid, kus nimede erinevus tuleneb ortograafilistest variatsioonidest,
+eelkõige topelttähtede kasutusest
+
+```{r}
+# 1) Funktsioon topelttähtede eemaldamiseks
+remove_doubles <- function(x) {
+  gsub("(.)\\1+", "\\1", x)
+}
+
+# 2) Loon uued veerud (originaal jääb alles)
+kooskoos <- kooskoos %>%
+  mutate(
+    eesnimi_uus.x = remove_doubles(eesnimi1.x),
+    eesnimi_uus.y = remove_doubles(eesnimi1.y),
+    perenimi_uus.x = remove_doubles(perenimi1.x),
+    perenimi_uus.y = remove_doubles(perenimi1.y)
+  )
+
+# 3) Eesnime hinnang
+kooskoos <- kooskoos %>%
+  mutate(
+    sidumine_korras_eesnimi = case_when(
+      
+      # kui juba enne kattus 100%
+      eesnimi1 == 1 ~ "eesnimi_kattub_identselt",
+      
+      # kui pärast topelttähtede eemaldamist kattub
+      !is.na(eesnimi_uus.x) & !is.na(eesnimi_uus.y) &
+        eesnimi_uus.x == eesnimi_uus.y ~ "eesnimi_kattub_ilma_topelttaht",
+      
+      TRUE ~ NA_character_
+    )
+  )
+
+# 4) Perenime hinnang
+kooskoos <- kooskoos %>%
+  mutate(
+    sidumine_korras_perenimi = case_when(
+      
+      # kui juba enne kattus 100%
+      perenimi1 == 1 ~ "perenimi_kattub_identselt",
+      
+      # kui pärast topelttähtede eemaldamist kattub
+      !is.na(perenimi_uus.x) & !is.na(perenimi_uus.y) &
+        perenimi_uus.x == perenimi_uus.y ~ "perenimi_kattub_ilma_topelttaht",
+      
+      TRUE ~ NA_character_
+    )
+  )
+
+# 5) Kontroll
+table(kooskoos$sidumine_korras_perenimi, useNA = "always")
+table(kooskoos$sidumine_korras_eesnimi, useNA = "always")
+
+```
+
+### 5. Sagedastest ees- ja perenimedest õigete kombinatsioonide abitabel
+
+Olen vaadanud kõige enam korduvaid nimekombinatsioone, mis tekkisid
+sidumisel ja milles on väiksed erinevused nimes. Olen hinnanud osad
+paarid õigeteks kombinatsioonideks, lähtudes trüki- ja kirjavigadest, mitte varantidest jaan-juhan jms.
+Need tegin exceli tabelisse ja nüüd võrdlen andmetega.
+
+Nimede hindamisel koostasin eraldiseisva abitabeli, mille abil hindasin saadud vahetulemuses esinenud kõige sagedasemaid ees- ja perenimide kombinatsioone, mis ei kattunud identselt. Eesmärk oli määrata kattuvate nimedega võrdseks need nime kombinatsioonid, kus kahe nime kirjutamisel esinesid väikesed erinevused kirjapildis (nt trüki- või kirjavead) nt „Pödder“ → „Põder“ (12 kord), Michelson→Mihelson (34 korda) ja „Elfride“ →“Elfriede“ (89 korda); „Konstatin“ →“Konstantin“ (397 korda). Siin kohal leidsin et sagedastemate nimekombinatsioonide läbi vaatamine on efektiivsem, kui konkreetsete reeglite välja mõtlemine, sest kui erinevusi ühtlustada reegli alusel toimuks kindlasti teataval määral ka nime kujude moonutamist, mille tõttu tekiks vale seoseid. Võrreldes ees ja perenimesid sisi rohkem varieeruvust oli eesnimedes seal andsin hinnangu 132 eesnimekombinatsioonile, et need on võrdsed ja perenimedes 118 paari. 
+```{r}
+eesnimed_komb <- read_csv2("eesnimede_kombinatsioonid_oiged.csv")
+perenimed_komb <- read_csv2("perenimede_kombinatsioonid_oiged.csv")
+table(eesnimed_komb$hinnang)
+table(perenimed_komb$hinnang)
+
+#1. Filtreeri ainult õiged kombinatsioonid
+eesnimed_ok <- eesnimed_komb %>%
+  filter(hinnang == TRUE) %>%
+  select(eesnimi_opt, eesnimi_rr_pr)
+
+perenimed_ok <- perenimed_komb %>%
+  filter(hinnang == TRUE) %>%
+  select(perenimi_opt, perenimi_rr_pr)
+
+#2 ühendan eesnimed ja lisan hinnangu
+kooskoos <- kooskoos %>%
+  left_join(
+    eesnimed_ok %>% mutate(flag_eesnimi = TRUE),
+    by = c("eesnimi1.x" = "eesnimi_opt",
+           "eesnimi1.y" = "eesnimi_rr_pr")
+    ) %>%
+  mutate(
+    sidumine_korras_eesnimi = case_when(
+      is.na(sidumine_korras_eesnimi) & flag_eesnimi ~ "oige_eesnimi_kombinatsioon",
+      TRUE ~ sidumine_korras_eesnimi) ) %>%
+  select(-flag_eesnimi)
+
+#3. ühendan perenimed ja lisan hinnangu
+kooskoos <- kooskoos %>%
+  left_join(
+    perenimed_ok %>% mutate(flag_perenimi = TRUE),
+    by = c("perenimi1.x" = "perenimi_opt",
+           "perenimi1.y" = "perenimi_rr_pr")
+  ) %>%
+  mutate(
+    sidumine_korras_perenimi = case_when(
+      is.na(sidumine_korras_perenimi) & flag_perenimi ~ "oige_perenimi_kombinatsioon",
+      TRUE ~ sidumine_korras_perenimi
+    )
+  ) %>%
+  select(-flag_perenimi)
+
+# Tulemuste jaotus
+table(kooskoos$sidumine_korras_eesnimi)
+table(kooskoos$sidumine_korras_perenimi)
+```
+
+### 3.6 NImede kattuvuste koondhinnang
+```{r}
+
+# Tugev nimekattuvus (käsitsi läbi vaadatud sagedasemd kombinatsioonid)
+kooskoos <- kooskoos %>%
+  mutate(
+    nimikorras = case_when(
+      sidumine_korras_eesnimi %in% c(
+        "eesnimi_kattub_identselt",
+        "oige_eesnimi_kombinatsioon"
+      ) &
+      sidumine_korras_perenimi %in% c(
+        "perenimi_kattub_identselt",
+        "oige_perenimi_kombinatsioon"
+      ) ~ "nimi korras",
+      TRUE ~ NA_character_
+    )
+  )
+
+# Toetav (nõrgem) nimekattuvus – topelttähtede põhjal
+kooskoos <- kooskoos %>%
+  mutate(
+    nimikorras_toetav = case_when(
+      sidumine_korras_eesnimi %in% c(
+        "eesnimi_kattub_identselt",
+        "eesnimi_kattub_ilma_topelttaht"
+      ) &
+      sidumine_korras_perenimi %in% c(
+        "perenimi_kattub_identselt",
+        "perenimi_kattub_ilma_topelttaht") ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+
+# Nimdede kattuvuse põhjal lõplikue hinnangu täiendamine
+kooskoos <- kooskoos %>%
+  mutate(
+    sidumine_korras_loplik = case_when(
+      is.na(sidumine_korras_loplik) & nimikorras == "nimi korras" ~ "korras_nimed_klapivad",
+      is.na(sidumine_korras_loplik) & nimikorras_toetav ~ "voimalik_nimi_klapib",
+      TRUE ~ sidumine_korras_loplik
+    )
+  )
+# Kontroll
+table(kooskoos$sidumine_korras_loplik, useNA = "always")
+```
+
+### Hinnangute salvestamine
+```{r}
+loplik_tulem_2026<-kooskoos
+#kuna ka varasemalt olen katsetanud hindamist, siis nimetan sidumine_loplik uue tulemusena, et säiliks vana ja tulemused oleks vajadusel võrreldavad
+loplik_tulem_2026 <- loplik_tulem_2026 %>%
+  rename(sidumine_korras_loplik_UUS = sidumine_korras_loplik)
+
+#lõplik tulem
+saveRDS(loplik_tulem_2026, file="loplik_tulem_2026.rds")
+
+```
+
+
+
+## 4. Hindamiskvaliteedi määramine
+
+ Eesmärk: ühendada automaatse sidumise tulemused varasema andmestikuga
+ ning määrata igale seosele kvaliteediklass
+
+### 4.1. PR andmete ühendamine
+
+```{r}
+# Laen PR sidumise tulemused
+opt_tulem_pr <- readRDS("C:/Users/marek/Desktop/magistritoomaterjalid/kaust/MAGISTRITOO/ANDMEBAAS/pereregistriga ühendamine/prandatud skript opt yhendamiseks/opt_tulem_pr.rds")%>%filter(!is.na(jrknr.y))
+
+# Laen lõpliku hinnangu fail
+loplik_tulem_2026 <- readRDS("C:/Users/marek/Desktop/magistritoomaterjalid/kaust/MAGISTRITOO/ANDMEBAAS/pereregistriga ühendamine/prandatud skript opt yhendamiseks/loplik_tulem_2026.rds")
+
+# Eemaldan dubleeruvad tunnused enne ühendamist
+loplik_tulem_2026_pr <- loplik_tulem_2026 %>%
+  select(-C2_ISIKU_VIIDE.y, -sidumis_aasta)
+
+# Ühendan PR tulemused ja uue hinnangu
+opt_tulem_pr_yhendatud <- opt_tulem_pr %>%
+  left_join(
+    loplik_tulem_2026_pr,
+    by = c("id", "jrknr.y")
+  )
+```
+
+### 4.2. RR andmete ühendamine
+
+```{r}
+#rr
+opt_tulem_rr <- readRDS("C:/Users/marek/Desktop/magistritoomaterjalid/kaust/MAGISTRITOO/ANDMEBAAS/pereregistriga ühendamine/prandatud skript opt yhendamiseks/opt_tulem_rr.rds")%>%filter(!is.na(C2_ISIKU_VIIDE.y))
+
+# Kontrollin kattuvaid tunnuseid
+intersect(names(loplik_tulem_2026), names(opt_tulem_rr))
+
+# Eemaldan dubleeruvad tunnused
+loplik_tulem_2026_rr <- loplik_tulem_2026 %>%
+  select(-sunniaasta.x, -eesnimi2.x, -perenimi2.x, -sunniaasta.y,-eesnimi2.y, -perenimi2.y, -eesnimi1,-perenimi1, sidumis_aasta, jrknr.y)
+
+# Ühendan RR tulemused ja uue hinnangu
+opt_tulem_rr_yhendatud <- opt_tulem_rr %>%
+  left_join(
+    loplik_tulem_2026_rr,
+    by = c("id", "C2_ISIKU_VIIDE.y")
+  )
+```
+
+### 4.3. Hindamiskvaliteedi klassifikatsioon
+
+```{r}
+# Eesmärk: määrata igale vastele kvaliteeditase (1–4)
+      #jätan välja 1 isiku kohta 3 õiget seost variandi, kuna sellega olid tulemused halvad
+opt_tulem_pr_yhendatud <- opt_tulem_pr_yhendatud %>%
+  mutate(
+    hindamiskvaliteet = case_when(
+      
+      # 1. Kõige kindlamad seosed (täielikud kattuvused) 
+      sidumine_korras_loplik_UUS %in% c(
+        "1 täielik seos ID kohta",
+        "2 täielikku seost ID kohta"
+      ) ~ 1,
+      
+      # 2. tugevad seosed
+      sidumine_korras_loplik_UUS %in% c(
+        "tugev seos 1",
+        "tugev seos 2"
+      ) ~ 2,
+      
+      # 3. Nimede kattuvus arvestades käsitsi kontrollitud sagedasi nimekombinatsioone
+      sidumine_korras_loplik_UUS %in% c(
+        "korras_nimed_klapivad"
+      ) ~ 3,
+      
+      # 5. Nõrgem nime kattuvus arvestades võrdlust eemaldatud topelttähetega
+      sidumine_korras_loplik_UUS %in% c(
+        "voimalik_nimi_klapib"
+      ) ~ 4  ))
+
+opt_tulem_rr_yhendatud <- opt_tulem_rr_yhendatud %>%
+  mutate(
+    hindamiskvaliteet = case_when(
+      
+      # 1. Kõige kindlamad seosed (täielikud kattuvused) 
+      sidumine_korras_loplik_UUS %in% c(
+        "1 täielik seos ID kohta",
+        "2 täielikku seost ID kohta"
+      ) ~ 1,
+      
+      # 2. tugevad seosed
+      sidumine_korras_loplik_UUS %in% c(
+        "tugev seos 1",
+        "tugev seos 2"
+      ) ~ 2,
+      
+      # 3. Nimede kattuvus arvestades käsitsi kontrollitud sagedasi nimekombinatsioone
+      sidumine_korras_loplik_UUS %in% c(
+        "korras_nimed_klapivad"
+      ) ~ 3,
+      
+      # 5. Nõrgem nime kattuvus arvestades võrdlust eemaldatud topelttähetega
+      sidumine_korras_loplik_UUS %in% c(
+        "voimalik_nimi_klapib"
+      ) ~ 4  ))
+```
+
+### 4.4. Lõpliku vaste valik
+
+```{r}
+# Eesmärk: valida iga isiku kohta üks parim vaste
+# välja jäävad need isikud, kelle puhul ei ole lisatud mingit hindamis tulemust
+#PR
+PR_loplik <- opt_tulem_pr_yhendatud %>%
+  group_by(id) %>%
+  arrange(hindamiskvaliteet, desc(weights)) %>%
+  slice(1) %>%
+  ungroup()
+PR_loplik <- PR_loplik %>% filter(!is.na(hindamiskvaliteet))
+
+table(PR_loplik$sidumine_korras_loplik_UUS,PR_loplik$hindamiskvaliteet)
+table(PR_loplik$sidumis_aasta,PR_loplik$hindamiskvaliteet)
+
+#RR
+RR_loplik <- opt_tulem_rr_yhendatud %>%
+  group_by(id) %>%
+  arrange(hindamiskvaliteet, desc(weights)) %>%
+  slice(1) %>%
+  ungroup()
+RR_loplik <- RR_loplik %>% filter(!is.na(hindamiskvaliteet))
+
+table(RR_loplik$sidumine_korras_loplik_UUS,RR_loplik$hindamiskvaliteet)
+
+table(RR_loplik$sidumis_aasta.x,RR_loplik$hindamiskvaliteet)
+
+#vormistan ühtse tabelina
+# PR kokku klasside kaupa
+PR_summary <- PR_loplik %>%
+  count(hindamiskvaliteet) %>%
+  mutate(allikas = "PR")
+
+# RR kokku klasside kaupa
+RR_summary <- RR_loplik %>%
+  count(hindamiskvaliteet) %>%
+  mutate(allikas = "RR")
+
+# ühendan
+tabel_kvaliteet <- bind_rows(PR_summary, RR_summary) %>%
+  pivot_wider(
+    names_from = allikas,
+    values_from = n,
+    values_fill = 0
+  ) %>%
+  arrange(hindamiskvaliteet)
+
+
+tabel_kvaliteet <- tabel_kvaliteet %>%
+  mutate(
+    kvaliteet_label = case_when(
+      hindamiskvaliteet == 1 ~ "Klass 1 – täielik vaste",
+      hindamiskvaliteet == 2 ~ "Klass 2 – tugev seos",
+      hindamiskvaliteet == 3 ~ "Klass 3 – nimekombinatsioon",
+      hindamiskvaliteet == 4 ~ "Klass 4 – võimalik vaste"
+    )
+  ) %>%
+  select(kvaliteet_label, PR, RR)
+
+knitr::kable(tabel_kvaliteet)
+
+#vaatan sidumisaasta jaotust
+tabel2_combined <- bind_rows(
+  PR_loplik %>%
+    count(allikas = "PR", hindamiskvaliteet, sidumis_aasta),
+  
+  RR_loplik %>%
+    count(allikas = "RR", hindamiskvaliteet, sidumis_aasta.x) %>%
+    rename(sidumis_aasta = sidumis_aasta.x)
+) %>%
+  unite(col, allikas, sidumis_aasta) %>%
+  pivot_wider(
+    names_from = col,
+    values_from = n,
+    values_fill = 0
+  ) %>%
+  arrange(hindamiskvaliteet)
+
+tabel2_combined
+```
+
+
+
+### 5. Käsitsi koostatud ground truth materjali hindamine
+
+Eesmärk: hinnata automaatse sidumise tulemuste kvaliteeti,
+võrreldes neid käsitsi tuvastatud (ground truth) andmetega
+
+## 5.1 Andmete laadimine ja ettevalmistus
+
+
+```{r}
+optantide_andmestik<- read_csv2("optantide_andmestik_ainult_NK_andmed_25_01_2026.csv")
+valim1<- read_csv2("R_tulemus_valim1.csv")
+optantide_andmestik_valim<- read_csv2("R_tulemus_NK_nimekiri_valim.csv")
+isikud<-read_csv2("isikutoimiku_liikmed_nimed.csv")
+
+
+# Lisan sünnikuupäeva info (toimikute põhjal) ja isikute tabeli andmed
+synnikp<-valim1[,c("id","isik_synnipaev","isik_synnikuu","isik_synniaasta","isik_surmapaev","isik_surmakuu","isik_surmaaasta")]
+
+
+optantide_andmestik_valim2 <-optantide_andmestik_valim %>%
+  left_join(synnikp, by = "id")%>%
+  left_join(isikud, by = "id")
+
+```
+
+## 5.2 PR ühendamiste hinnang
+```{r}
+#moodustan ühtse valimi andmestiku
+valim_PR <- optantide_andmestik_valim2 %>%
+  left_join(PR_loplik, by = "id")
+```
+
+
+```{r}
+#1. Märgin juhtumid, kus PR vaste puudub
+valim_PR <- valim_PR %>%
+  mutate(yhendamise_hinnang = if_else(is.na(jrknr.y), "puudub", NA))
+
+#2.Kontrollin täielikku sünnikuupäeva kattuvust
+valim_PR <- valim_PR %>%
+  mutate(
+    oige_synniaeg = case_when(
+      is.na(isik_synnipaev.x) | is.na(isik_synnipaev.y) |
+      is.na(isik_synnikuu.x) | is.na(isik_synnikuu.y) |
+      is.na(isik_synniaasta.x) | is.na(isik_synniaasta.y) ~ NA,
+      isik_synnipaev.x == isik_synnipaev.y &
+      isik_synnikuu.x == isik_synnikuu.y &
+      isik_synniaasta.x == isik_synniaasta.y ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+
+table(valim_PR$oige_synniaeg, useNA = "ifany") 
+
+# 2.1 Märgin täieliku kattuvuse korral tulemuse õigeks
+valim_PR <- valim_PR %>%
+  mutate(
+    yhendamise_hinnang = if_else(
+      oige_synniaeg %in% TRUE,
+      "ÕIGE",
+      yhendamise_hinnang
+    ),
+    yhendamise_hinnang_pohjendus = if_else(
+      oige_synniaeg %in% TRUE,
+      "sünnikuupäevad klapivad täpselt",
+      NA
+    )
+  )
+
+table(valim_PR$yhendamise_hinnang, useNA = "ifany")
+
+#3. Sünniaasta kontroll - kui aasta on vale, siis on kindlalt vale
+valim_PR <- valim_PR %>%
+  mutate(
+    oige_aasta = case_when(
+      is.na(isik_synniaasta.x) | is.na(isik_synniaasta.y) ~ NA,
+      isik_synniaasta.x == isik_synniaasta.y ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+#3.1 sünniaasta ei klapi -> vale
+valim_PR <- valim_PR %>%
+  mutate(
+    yhendamise_hinnang = if_else(
+      oige_aasta %in% FALSE,
+      "VALE",
+      yhendamise_hinnang
+    ),
+    yhendamise_hinnang_pohjendus = if_else(
+      oige_aasta %in% FALSE,
+      "erinev sünniaasta",
+      yhendamise_hinnang_pohjendus
+    ))
+
+#4.Osalise sünniaja kattuvuse analüüs
+valim_PR <- valim_PR %>%
+  mutate(
+    oige_aasta_ja_kuu = case_when(
+      is.na(isik_synnikuu.x) | is.na(isik_synnikuu.y) |
+      is.na(isik_synniaasta.x) | is.na(isik_synniaasta.y) ~ NA,
+      isik_synnikuu.x == isik_synnikuu.y &
+      isik_synniaasta.x == isik_synniaasta.y ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+
+# 4.1 Juhtumite analüüs, kus ainult päev erineb
+kysitav<-valim_PR%>% filter(oige_aasta_ja_kuu==T)%>%filter(oige_synniaeg==F)
+
+#Manuaalne otsus konkreetse juhtumi kohta - üks isik erineb ja see tulemus on vale, lisan hinnangu
+valim_PR <- valim_PR %>%
+  mutate(yhendamise_hinnang = if_else(id == "13314", "VALE",yhendamise_hinnang ),
+  yhendamise_hinnang_pohjendus = if_else(id == "13314", "õige isik suri 1933, pr vast abiellub 2.korda peale seda. Juhtum, kus identne nim, ja isanimi+lähedane sünnikuupäev ja sünnikoht",  yhendamise_hinnang_pohjendus))
+
+# 4.2 Juhtumite analüüs, kus päev ja kuu erineb
+# vaatan neid juhtumeid, kui kuu on vaid 1 võrra erinev
+oige_aasta<-valim_PR%>%filter(oige_aasta==TRUE & is.na(yhendamise_hinnang))%>%
+  mutate(kuuerinevus=isik_synnikuu.x-isik_synnikuu.y)
+table(oige_aasta$kuuerinevus)
+
+## Manuaalsed otsused - kahel isikul on sama sünniaasta, aga kuu erineb 1 võrra, vaatan neid lähemalt
+kysitav1<-oige_aasta%>%filter(kuuerinevus==1)
+
+## kaks isikut: ühel mitu seost ja valed kõik, teine on õige, vanemad klapivad.
+valim_PR <- valim_PR %>%
+  mutate(
+    yhendamise_hinnang = case_when(
+      id == "18135" ~ "VALE",
+      id == "19503" ~ "ÕIGE",
+      TRUE ~ yhendamise_hinnang
+    ),
+    yhendamise_hinnang_pohjendus = case_when(
+      id == "18135" ~ "mitu seost, kõik valed, vale isa nimi sel variandil, mil kp kõige lähemal",
+      id == "19503" ~ "vanemad õiged, kp väike erinevus",
+      TRUE ~ yhendamise_hinnang_pohjendus
+    )
+  )
+
+#5. Need isikud, kellel on olemas valimis sünnikuupäev ja see ei klapi PR tulemustega, arvestades veel eelnevalt läbi vaadatud võimalikke sünnipäeva kõrvale kaldeid, siis need kellel hinnang seni puudub on vale seosed.
+
+valim_PR <- valim_PR %>%
+  mutate(
+    vale_synnikuupaev = is.na(yhendamise_hinnang) & oige_aasta_ja_kuu == FALSE,
+    yhendamise_hinnang = if_else(vale_synnikuupaev, "VALE", yhendamise_hinnang),
+    yhendamise_hinnang_pohjendus = if_else(
+      vale_synnikuupaev,
+      "vale sünnikuupäev_eraldvaadatud väikesed kõrvale kalded",
+      yhendamise_hinnang_pohjendus
+    )
+  ) %>%
+  select(-vale_synnikuupaev)
+
+### vaatan palju on alles ilma hinnanguta
+table(valim_PR$yhendamise_hinnang, useNA = "ifany")
+table(valim_PR$yhendamise_hinnang_pohjendus, useNA = "ifany")
+
+hinnanguta<-valim_PR%>%filter(is.na(yhendamise_hinnang))
+
+# 6. erijuhtumied (pereliikmete klappimine)
+
+# 6.1 ühendatud isik on vale abikaasaga, veapõhjus, arvestatud neipõlvenimega, abielud enne opteerimist (1910/1912) ja saabusid koos abikaasaga, ehk opteerimis nimekirjas juba perekonna nimi pärast abiellumist
+
+valim_PR <- valim_PR %>%
+  mutate(
+    yhendamise_hinnang = if_else(
+      id %in% c("11738","12738"),
+      "VALE",
+      yhendamise_hinnang
+    ),
+    yhendamise_hinnang_pohjendus = if_else(
+      id %in% c("11738","12738"),
+      "ühendatud vale abikaasaga",
+      yhendamise_hinnang_pohjendus))
+
+#vaatan palju on alles ilma hinnanguta
+table(valim_PR$yhendamise_hinnang, useNA = "ifany")
+table(valim_PR$yhendamise_hinnang_pohjendus, useNA = "ifany")
+
+#vaatan käsitsi läbi ilma hinnanguta jäänud isikud
+kysitav2<-valim_PR%>%filter(is.na(yhendamise_hinnang))
+
+valim_PR <- valim_PR %>%
+  mutate(
+    yhendamise_hinnang = case_when(
+      id %in% c("11216","12739") ~ "VALE",
+      id == "25691" ~ "VALE",
+      id %in% c("29068","29069","29070","29071") ~ "VALE",
+      id == "17932" ~ "?",
+      id == "36782" ~ "VALE",
+      id == "36781" ~ "ÕIGE",
+      id == "24" ~ "?",
+      TRUE ~ yhendamise_hinnang
+    ),
+    yhendamise_hinnang_pohjendus = case_when(
+      id %in% c("11216","12739") ~ "valed vanemad, ühendatud perenime järgi peale abiellumist, aga isik on alles laps",
+      id == "25691" ~ "valed vanemad",
+      id %in% c("29068","29069","29070","29071") ~ "perekond valesti kõik ühendatud - opteerub naine koos lastega, aga ei õnnestu leida, mis oleks õiged andmed, need andmed ei klapi",
+      id == "17932" ~ "üksik naine, tõenäoliselt vale, kuna sünnikoht ei klapi NK nimekirja päritolukohaga",
+      id == "36782" ~ "valed vanemad (isa on nimekaim, kes on sündinud samas vallas ja samal sünniaastal, aga sünnikuupäev on vale)",
+      id == "36781" ~ "vanemad õiged",
+      id == "24" ~ "pole piisavalt infot",
+      TRUE ~ yhendamise_hinnang_pohjendus
+    )
+  )
+
+#vaatan palju on alles ilma hinnanguta
+table(valim_PR$yhendamise_hinnang, useNA = "ifany")
+table(valim_PR$yhendamise_hinnang_pohjendus, useNA = "ifany")
+```
+
+#### 5.2.1. määran hindamiskvaliteedi klassid PR andmestikule
+
+### PR hindamiskvaliteedi tulemused
+
+```{r}
+#vaatan palju on alles ilma hinnanguta
+table(valim_PR$yhendamise_hinnang,valim_PR$hindamiskvaliteet, useNA = "ifany")
+
+#kõik seosed ilma puuduvatetat
+table(valim_PR$yhendamise_hinnang,valim_PR$hindamiskvaliteet)
+
+prop.table(
+  table(valim_PR$yhendamise_hinnang, valim_PR$hindamiskvaliteet),
+  margin = 2
+) * 100
+```
+
+## 5.3 RR ühendamiste hinnang
+```{r}
+#moodustan ühtse valimi andmestiku
+valim_RR <- optantide_andmestik_valim2 %>%
+  left_join(RR_loplik, by = "id")
+```
+
+```{r}
+#1. Märgin juhtumid, kus RR vaste puudub
+valim_RR <- valim_RR %>%
+  mutate(yhendamise_hinnang = if_else(is.na(C2_ISIKU_VIIDE.y), "puudub", NA))
+
+#viin RR sünnikuupäevad võrreldavasse vormingusse
+valim_RR <- valim_RR %>%
+  mutate(
+    a1_SynniKP = as.character(a1_SynniKP),
+    isik_synniaasta.y = as.numeric(substr(a1_SynniKP, 1, 4)),
+    isik_synnikuu.y   = as.numeric(substr(a1_SynniKP, 5, 6)),
+    isik_synnipaev.y  = as.numeric(substr(a1_SynniKP, 7, 8)))
+#viin RR surmakuupäevad võrreldavasse vormingusse
+valim_RR <- valim_RR %>%
+  mutate(
+    a1_SurmaKP = as.character(a1_SurmaKP),
+    isik_surmaaasta.y = as.numeric(substr(a1_SurmaKP, 1, 4)),
+    isik_surmakuu.y   = as.numeric(substr(a1_SurmaKP, 5, 6)),
+    isik_surmapaev.y  = as.numeric(substr(a1_SurmaKP, 7, 8)))
+
+#2.Kontrollin täielikku sünnikuupäeva kattuvust
+valim_RR <- valim_RR %>%
+  mutate(
+    oige_synniaeg = case_when(
+      is.na(isik_synnipaev) | is.na(isik_synnipaev.y) |
+      is.na(isik_synnikuu) | is.na(isik_synnikuu.y) |
+      is.na(isik_synniaasta) | is.na(isik_synniaasta.y) ~ NA,
+      isik_synnipaev == isik_synnipaev.y &
+      isik_synnikuu == isik_synnikuu.y &
+      isik_synniaasta == isik_synniaasta.y ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+table(valim_RR$oige_synniaeg, useNA = "ifany") 
+# 2.1 Märgin täieliku kattuvuse korral tulemuse õigeks
+valim_RR <- valim_RR %>%
+  mutate(
+    yhendamise_hinnang = if_else(
+      is.na(yhendamise_hinnang) & oige_synniaeg %in% TRUE,
+      "ÕIGE",yhendamise_hinnang    ),
+    yhendamise_hinnang_pohjendus = if_else(
+      oige_synniaeg %in% TRUE,
+      "sünnikuupäevad klapivad täpselt",NA  )
+  )
+table(valim_RR$yhendamise_hinnang, useNA = "ifany")
+table(valim_RR$yhendamise_hinnang_pohjendus, useNA = "ifany")
+
+#3. Sünniaasta kontroll - kui aasta on vale, siis on kindlalt vale
+valim_RR <- valim_RR %>%
+  mutate(
+    oige_aasta = case_when(
+      is.na(isik_synniaasta) | is.na(isik_synniaasta.y) ~ NA,
+      isik_synniaasta == isik_synniaasta.y ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+#3.1 sünniaasta ei klapi -> vale
+valim_RR <- valim_RR %>%
+  mutate(
+    yhendamise_hinnang = if_else(
+     is.na(yhendamise_hinnang) &  oige_aasta %in% FALSE,
+      "VALE",
+      yhendamise_hinnang
+    ),
+    yhendamise_hinnang_pohjendus = if_else(
+      is.na(yhendamise_hinnang_pohjendus) & oige_aasta %in% FALSE,
+      "erinev sünniaasta",
+      yhendamise_hinnang_pohjendus
+    ))
+
+#4.Osalise sünniaja kattuvuse analüüs
+valim_RR <- valim_RR %>%
+  mutate(
+    oige_aasta_ja_kuu = case_when(
+      is.na(isik_synnikuu) | is.na(isik_synnikuu.y) |
+      is.na(isik_synniaasta) | is.na(isik_synniaasta.y) ~ NA,
+      isik_synnikuu == isik_synnikuu.y &
+      isik_synniaasta == isik_synniaasta.y ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+
+# 4.1 Juhtumite analüüs, kus ainult päev erineb
+kysitav<-valim_RR%>% filter(oige_aasta_ja_kuu==TRUE)%>%filter(oige_synniaeg==FALSE)
+
+# 4.2 Päevade vahe arvutamine
+valim_RR <- valim_RR %>%
+  mutate(
+    paeva_vahe = case_when(
+      is.na(isik_synnipaev) | is.na(isik_synnipaev.y) ~ NA,
+      TRUE ~ abs(isik_synnipaev - isik_synnipaev.y)
+    )
+  )
+# 4.3 Loen õigeks need, kus päev erineb maksimaalselt 1 võrra
+valim_RR <- valim_RR %>%
+  mutate(
+    yhendamise_hinnang = if_else(
+      is.na(yhendamise_hinnang) & oige_aasta_ja_kuu == TRUE & paeva_vahe <= 1,
+      "ÕIGE",
+      yhendamise_hinnang
+    ),
+    yhendamise_hinnang_pohjendus = if_else(
+      is.na(yhendamise_hinnang_pohjendus) & oige_aasta_ja_kuu == TRUE & paeva_vahe <= 1,
+      "sünniaeg klapib (päeva erinevus ±1)",
+      yhendamise_hinnang_pohjendus
+    )
+  )
+
+#vaatan allesjäänuid 
+kysitav<-valim_RR%>% filter(oige_aasta_ja_kuu==TRUE)%>%filter(oige_synniaeg==FALSE)%>%filter(is.na(yhendamise_hinnang))
+
+#Manuaalne otsus konkreetse juhtumi kohta - üks isik erineb ja see tulemus on vale, lisan hinnangu
+valim_RR <- valim_RR %>%
+  mutate(yhendamise_hinnang = if_else(id == "9751", "VALE",yhendamise_hinnang ),
+  yhendamise_hinnang_pohjendus = if_else(id == "9751", "nimekaim, perekond ja sünnikoht vale, PR õige ühendus olemas",  yhendamise_hinnang_pohjendus))
+
+valim_RR <- valim_RR %>%
+  mutate(
+    yhendamise_hinnang = if_else(id %in% c("20208", "12136"),"ÕIGE", yhendamise_hinnang),
+    yhendamise_hinnang_pohjendus = if_else(id %in% c("20208", "12136"),"sünnikuupäeva erinevus uus vs vanakalender",yhendamise_hinnang_pohjendus) )
+
+valim_RR <- valim_RR %>%
+  mutate(yhendamise_hinnang = if_else(id == "13314", "VALE",yhendamise_hinnang ),
+  yhendamise_hinnang_pohjendus = if_else(id == "13314", "vale surmaaeg",  yhendamise_hinnang_pohjendus))
+
+table(valim_RR$yhendamise_hinnang,valim_RR$sidumis_aasta.y, useNA = "ifany")
+
+#5.Kontrollin surmakuupäeva kattuvust
+valim_RR <- valim_RR %>%
+  mutate(
+    oige_surmaaeg = case_when(
+      is.na(isik_surmapaev) | is.na(isik_surmapaev.y) |
+      is.na(isik_surmakuu) | is.na(isik_surmakuu.y) |
+      is.na(isik_surmaaasta) | is.na(isik_surmaaasta.y) ~ NA,
+      isik_surmapaev == isik_surmapaev.y &
+      isik_surmakuu == isik_surmakuu.y &
+      isik_surmaaasta == isik_surmaaasta.y ~ TRUE,
+      TRUE ~ FALSE) )
+table(valim_RR$oige_surmaaeg)
+
+valim_RR <- valim_RR %>%
+  mutate(
+    yhendamise_hinnang = if_else(
+      is.na(yhendamise_hinnang) & oige_surmaaeg %in% TRUE,
+      "ÕIGE_ilma_aasta",yhendamise_hinnang    ),
+    yhendamise_hinnang_pohjendus = if_else(
+      is.na(yhendamise_hinnang_pohjendus) & oige_surmaaeg %in% TRUE,
+      "surmakuupäevad klapivad täpselt",yhendamise_hinnang_pohjendus  )
+  )
+
+table(valim_RR$yhendamise_hinnang_pohjendus, useNA = "ifany")
+table(valim_RR$yhendamise_hinnang, useNA = "ifany")
+
+valim_RR <- valim_RR %>%
+  mutate(yhendamise_hinnang = if_else(is.na(yhendamise_hinnang) & sidumis_aasta.x=="ilma_aasta", "puudub_seotud ilma aastata",yhendamise_hinnang ))
+
+table(valim_RR$yhendamise_hinnang, useNA = "ifany")
+table(valim_RR$yhendamise_hinnang_pohjendus, useNA = "ifany")
+
+kysitav2<-valim_RR%>%filter(is.na(yhendamise_hinnang))
+kysitav2<-kysitav2[,c(1,39:41,124:126)]
+
+valim_RR <- valim_RR %>%
+  mutate(
+    yhendamise_hinnang = case_when(
+      
+      # 1. Kui sünniaasta puudub → puudub info
+      is.na(yhendamise_hinnang) & is.na(isik_synniaasta) ~ "puudub",
+      
+      # 2. Käsitsi õiged
+      is.na(yhendamise_hinnang) & id == 4207 ~ "ÕIGE",
+      
+      # 3. Käsitsi valed
+      is.na(yhendamise_hinnang) & id %in% c(18135, 21140) ~ "VALE",
+      
+      # muu jääb samaks
+      TRUE ~ yhendamise_hinnang
+    ),
+    
+    yhendamise_hinnang_pohjendus = case_when(
+      
+      # puudub info
+      is.na(yhendamise_hinnang_pohjendus) & is.na(isik_synniaasta) ~ "puudub sünniaasta, ebapiisav info",
+      
+      # käsitsi õige
+      is.na(yhendamise_hinnang_pohjendus) & id == 4207 ~ "1 päeva erinevus",
+      
+      # käsitsi vale
+      is.na(yhendamise_hinnang_pohjendus) & id %in% c(18135, 21140) ~ "sünnikuupäev ei klapi",
+      
+      TRUE ~ yhendamise_hinnang_pohjendus
+    )
+  )
+
+
+
+#vaatasin alles jäänud kp erinevused üle
+      valim_RR <- valim_RR %>%
+  mutate(
+    yhendamise_hinnang = case_when(
+      
+      is.na(yhendamise_hinnang) & oige_aasta_ja_kuu == FALSE ~ "VALE",
+      
+      TRUE ~ yhendamise_hinnang
+    ),
+    
+    yhendamise_hinnang_pohjendus = case_when(
+      
+      is.na(yhendamise_hinnang_pohjendus) & oige_aasta_ja_kuu == FALSE ~ 
+        "vale sünnikuupäev_eraldvaadatud väikesed kõrvale kalded",
+      
+      TRUE ~ yhendamise_hinnang_pohjendus
+    )
+  )
+
+table(valim_RR$yhendamise_hinnang, useNA = "ifany")
+table(valim_RR$yhendamise_hinnang_pohjendus, useNA = "ifany")
+```
+#### 5.2.1. määran hindamiskvaliteedi klassid RR andmestikule
+
+### RR hindamiskvaliteedi tulemused
+
+```{r}
+#vaatan palju on alles ilma hinnanguta
+table(valim_RR$yhendamise_hinnang,valim_RR$hindamiskvaliteet, useNA = "ifany")
+
+#kõik seosed ilma puuduvatetat
+table(valim_RR$yhendamise_hinnang,valim_RR$hindamiskvaliteet)
+
+prop.table(
+  table(valim_RR$yhendamise_hinnang, valim_RR$hindamiskvaliteet),
+  margin = 2
+) * 100
+
+a<-valim_RR%>%filter(sidumis_aasta.x=="ilma_aasta")
+```
+#Lõplik andmestik, ainult kvaliteediklass 1 ja 2
+```{r}
+PR_loplik1_2<-PR_loplik%>%filter(hindamiskvaliteet<=2)
+RR_loplik1_2<-RR_loplik%>%filter(hindamiskvaliteet<=2)%>%filter(sidumis_aasta.x!="ilma_aasta")
+
+write_csv(PR_loplik1_2, "PR_loplik1_2.csv")
+write_csv(RR_loplik1_2, "RR_loplik1_2.csv")
+
+table(RR_loplik1_2$hindamiskvaliteet)
+      table(PR_loplik1_2$hindamiskvaliteet)
+
+      
+```
+

@@ -1,0 +1,453 @@
+---
+title: "tulemuste analüüs"
+output: html_document
+date: "2026-04-06"
+---
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(readr)
+library(sf)
+```
+
+#PR ANDMESTIK
+```{r}
+PR <- read_csv2("PR_loplik1_2_valitud_tulbad.csv")
+```
+
+
+##PR SÜNNIKOHA ANDMETE PUHASTAMINE
+```{r}
+# =====================================================
+# 1. LOE SHAPEFILED
+# =====================================================
+
+vald22 <- st_read("Vald_1922/Vald_1922.shp")
+vald38 <- st_read("Vald_1938/Vald_1938.shp")
+kihelkond <- st_read("Kihelkond_kuni_1917/Kihelkond_kuni_1917.shp")
+moisad <- st_read("Moisamaad_kuni_1917/moisamaad_1917.shp")
+
+# =====================================================
+# 2. LOOKUP TABELID
+# =====================================================
+
+make_lookup <- function(df) {
+  df %>%
+    st_drop_geometry() %>%
+    mutate(
+      nimi = str_to_upper(NIMI),
+      nimi = str_remove(nimi, " LINN$"),
+      nimi = str_remove(nimi, " VALD$"),
+      maakond = str_to_upper(MAAKOND)
+    ) %>%
+    select(nimi, maakond) %>%
+    distinct()
+}
+
+vald22_tabel <- make_lookup(vald22)
+vald38_tabel <- make_lookup(vald38)
+kihelkond_tabel<-make_lookup(kihelkond)
+moisad_tabel<-make_lookup(moisad)
+
+# =====================================================
+# MUUDA KÕIK LOOKUP TABELID UNIKAALSEKS
+# =====================================================
+
+vald22_tabel <- vald22_tabel %>%
+  distinct(nimi, .keep_all = TRUE)
+
+vald38_tabel <- vald38_tabel %>%
+  distinct(nimi, .keep_all = TRUE)
+
+kihelkond_tabel <- kihelkond_tabel %>%
+  distinct(nimi, .keep_all = TRUE)
+
+moisad_tabel <- moisad_tabel %>%
+  distinct(nimi, .keep_all = TRUE)
+
+# =====================================================
+# 3. PUHASTA SÜNNIKOHT 
+# =====================================================
+#eemaldan käändes lõpud ja linn/alev/vald
+PR <- PR %>%
+  mutate(
+    synnikoht_puhas = str_to_upper(isik_synnikoht),
+    synnikoht_puhas = str_remove(synnikoht_puhas, " [AVL]$"),
+    synnikoht_puhas = str_remove(synnikoht_puhas, " LINN$"),
+    synnikoht_puhas = str_remove(synnikoht_puhas, " VALD$"),
+    synnikoht_puhas = str_remove(synnikoht_puhas, " ALEV$"),
+    synnikoht_puhas = str_squish(synnikoht_puhas)
+  ) %>%
+  mutate(
+    synnikoht_puhas = case_when(
+      synnikoht_puhas %in% c(
+        "TALLINNA","TALLINNAS",
+        "TARTUS",
+        "NARVAS",
+        "PÄRNUS",
+        "RAKVERES",
+        "VILJANDIS",
+        "VALGAS",
+        "VÕRUS",
+        "HAAPSALUS",
+        "PAIDES",
+        "KURESSAARES"
+      ) ~ str_remove(synnikoht_puhas, "S$") |> 
+          str_replace("TALLINNA","TALLINN"),
+      
+      synnikoht_puhas == "PETROGRAD" ~ "PETERBURI",
+      TRUE ~ synnikoht_puhas
+    )
+  )
+
+# =====================================================
+# 4. HIERARHILINE ÜHENDAMINE (kontrolliga)
+# =====================================================
+
+# 1. VALD 1922 (esmane)
+PR <- PR %>%
+  left_join(vald22_tabel, by = c("synnikoht_puhas" = "nimi")) %>%
+  rename(maakond_loplik = maakond)
+
+# 2. VALD 1938 (ainult kui eelmine NA)
+PR <- PR %>%
+  left_join(vald38_tabel, by = c("synnikoht_puhas" = "nimi")) %>%
+  rename(maakond_38 = maakond) %>%
+  mutate(
+    maakond_loplik = case_when(
+      is.na(maakond_loplik) & !is.na(maakond_38) ~ maakond_38,
+      TRUE ~ maakond_loplik
+    )
+  ) %>%
+  select(-maakond_38)
+
+# 3. KIHELKOND (ainult kui ikka NA)
+PR <- PR %>%
+  left_join(kihelkond_tabel, by = c("synnikoht_puhas" = "nimi")) %>%
+  rename(maakond_kihelkond = maakond) %>%
+  mutate(
+    maakond_loplik = case_when(
+      is.na(maakond_loplik) & !is.na(maakond_kihelkond) ~ maakond_kihelkond,
+      TRUE ~ maakond_loplik
+    )
+  ) %>%
+  select(-maakond_kihelkond)
+
+# 4. MÕIS (ainult kui ikka NA)
+PR <- PR %>%
+  left_join(moisad_tabel, by = c("synnikoht_puhas" = "nimi")) %>%
+  rename(maakond_mois = maakond) %>%
+  mutate(
+    maakond_loplik = case_when(
+      is.na(maakond_loplik) & !is.na(maakond_mois) ~ maakond_mois,
+      TRUE ~ maakond_loplik
+    )
+  ) %>%
+  select(-maakond_mois)
+
+# =====================================================
+# 5. SÜNNIRIIK (KOONDATUD ÜHTE BLOKKI)
+# =====================================================
+
+PR <- PR %>%
+  mutate(
+    synniriik_loplik = case_when(
+      !is.na(isik_synniriik) ~ isik_synniriik,
+      
+      str_detect(isik_synnikoht, regex("^Lening|^Peterb|^Petro|^Mosk", ignore_case = TRUE)) ~ "Venemaa",
+      str_detect(isik_synnikoht, regex("^Riia", ignore_case = TRUE)) ~ "Läti",
+      
+      !is.na(maakond_loplik) ~ "Eesti",
+      
+      synnikoht_puhas %in% c("PIHKVA","KROONLINNA","KROONLINNAS") ~ "Venemaa",
+      
+      TRUE ~ NA_character_
+    )
+  )
+
+# =====================================================
+# 6. PUUDUVAD 
+# =====================================================
+
+PR <- PR %>%
+  mutate(
+    synnikoht_puhas = case_when(
+      synnikoht_puhas %in% c("?", "??", "???", "????", "-") ~ "PUUDUB",
+      TRUE ~ synnikoht_puhas
+    ),
+    synniriik_loplik = case_when(
+      synnikoht_puhas == "PUUDUB" ~ "PUUDUB",
+      TRUE ~ synniriik_loplik
+    )
+  )
+
+# =====================================================
+# 7. Vaatan alles jäänud määratlemata kohtasid, nende puhul ei määra maakonda ainult riigi tasandil
+# =====================================================
+
+PR %>% count(synniriik_loplik,sort = TRUE)
+puudub<-PR %>% filter(is.na(synniriik_loplik)) %>% count(synnikoht_puhas, sort = TRUE)
+
+#lisan 
+PR <- PR %>%
+  mutate(
+    synniriik_loplik = case_when(
+
+      # =========================
+      # EESTI
+      # =========================
+      synnikoht_puhas %in% c(
+        "AAKRES","AAVERE","ABRUKA","ALASTKIVI","ALAWERE","ALUSTVERE","ANJA",
+        "ANTSLA","ANTSLA A","ANTSLA?","ARULA","ARKNA","ARUKÜLA","ARRASI","ASERI",
+        "ASUDRU","AUVERE JOALAL","AUVERE-JÕALA","AUWERE","AVINURME-PIILSI","AWANDUSE",
+        "BEGUNITSA","EIDAPERE","EIDU","EIVERE","EICHHOFF","ELISTVERES","ELISTWERE",
+        "ELLAVERE","EMASTE","ERASTWERE","ERVITA",
+        "FIERENHOFIS VÕRUMAAL TSOORU VALLAS",
+        "HAASLAWA","HAGUDI","HAIKRE","HALLINGA","HALLINGI","HANNJA","HANGUSE",
+        "HEIMTALU","HEINTALI","HEINTALU","HELMI","HERMAMÄE","HIIUMAA","HIMMASTES",
+        "HOMULI","HOSLTRE","HULJA","IGASTE","ILMJÄRVE","ILUKA","ILUKA ?","IMUKVERE",
+        "JÄGALA","JÄGALA ?","JÄNEDA","JÄRVAJÕE","JÄRVAMAAL","JÄRVEVALLAS","JÄRWAKANDI",
+        "JOALA","JOOSU","JÕELEHTME","JÕEPERE","JÕGEWA","JÕHVIS","JÕKSI",
+        "K-MALLA","KABINA","KAAGJÄRWE","KAAREPERES","KAARLIS",
+        "KAARMA SUUR","KAARMA-SUUR","KAARMA-SUURE","KAARMA-SUURVALLA",
+        "KAE","KAELASE","KAIAVERE","KAIUS","KAISMAA","KALLASTE A","KALLASTEL",
+        "KAMBJAS","KANEPIS","KANNU","KANGUTA","KARASKIS","KARKUSE",
+        "KARULA V IIGASTE","KASARITSA","KASARITSA V ?","KASSINURME",
+        "KASTRE -VÕNNU","KASTSE","KAVASTU V, KASTRE-VÕNNU",
+        "KAVILDA","KAVILDA ?","KAWASTU","KAWASTU?","KAWILDA","KAWILDAS",
+        "KEEDIKA","KEILAS","KENTNA","KIIGJÄRVE","KILINGI-NÕMME","KILINGI-NÕMMES","KILINGIS",
+        "KILTSI","KIRIKU","KIRNA","KIU","KIUMA","KIVIJÄRVE","KIVIJÄRVEL",
+        "KLOOSTRI","KOIDLA","KOIDLA V?","KODASOO","KOIKKÜLA","KOIKÜLAS",
+        "KOIOLA","KOIOLAS","KOLGA-JAANI","KOLU",
+        "KOLOVERE -KALJU","KOLOVERE-KALJU",
+        "KOORKÜLA","KOORKÜLA?","KOOSA","KORRASTE","KREENI","KRIIMANNI",
+        "KUDINAS","KUKRUSE","KULLAMA","KUNDA A","KUNDA ALEV","KUNDAS","KUNNA",
+        "KURGEL","KURTNA","KURU","KURESAARE","KURESSAARE","KURESSAARES","KURASAARE",
+        "KUVASTU","KÄBRI","KÄNDLA","KÄPLAS","KÄRAVERE","KÄRDLA ALEV",
+        "KÄRDLAS","KÄRKNA","KÄRKNAS","KÄRSTNAS",
+        "KÕNNU","KÕNNU V ?","KÕRGEPALU","KÕRGESSAARE","KÕRGE-SAARE","KÕRGRSAARE","KÕRGULA",
+        "LAASJÄRVE","LAATRES","LAEKWERE","LAEWA","LAEWAS","LAIUSE-TÄHKVERE","LAIUS-TÄHKWERE",
+        "LAITSNA","LAIMETSA","LAUISE","LAUPA","LEETSI","LEHTRE","LEHTSES","LEISU",
+        "LEMKÜLA KÜLAS,ASSAMALLA","LINTOVA","LOEVENHOF","LOOTSBERGI",
+        "LÕVEL","LÕWE","LUUAL","LUUNJAS","LUUTSNIKU","LÜGVALLA","LÜMMANDA","LÜMMADO",
+        "M-SUURE","MAARDU","MAHU-SUURE","MALLA","MALLAS",
+        "MÄDAPEA","MÄEKÜLA","MÄKSAL","MÄRDLA",
+        "MEHIKOORMA","MEHATU","MORNA",
+        "MÕDRIKU","MÕISAKÜLA","MÕISAKÜLA ALEV","MÕISAKÜLAS","MÕISAMAA","MÕTSU",
+        "MUHU-HELLAMAA","MUHU-SUUR","MUHU-SUURE","MUHU-SUURES","MUHU-SUURVALLAS",
+        "MUSTVEE A","MUSTVEE ALEV",
+        "N-JÕESUU","NAELAVERE","NAISAARE",
+        "NARVA JÕESUU","NARVA L KREENHOLM","NARVA-JÕESUU ALEV","NARVA-JÕESUU, NARVA",
+        "NARWA","NARWAS","NAVI","NEERUTIS",
+        "NÕMME","NÕMMEKÜLA","NÕMMKÜLA","NÕMMES","NÜPLIS",
+        "OJASOO","OLUSTVEER","ORASTVERE","ORAWA","ORGITA",
+        "PAASLEPA","PAHUVERE","PAJUSE","PALAMUSEL","PALAMUSTE","PALDISKI","PALDISIKI",
+        "PALUPERE","PALVERE","PANDIVERE","PANGOTIS","PAUNKÜLA",
+        "PEIPSIÄÄRNE","PEIPSIÄÄRSE","PEIPSIÄÄRSES","PEISIÄÄRE",
+        "PENNINGI","PETSERIMAA","PETSERIMAAL,KULJE","PETSERIS",
+        "PILUSE","POIATUS,ANNA","PRANGI","PRIISAARE","PUKA","PUURIMANIS","PUURMANI",
+        "PURDI","PURILA","PUTKASTE","PUUMETSAL",
+        "PÄIDE","PÄITE","PÄRSTIS","PÄRSAMA","PÄSI",
+        "PÕHALEPA","PÕLGUSTE","PÕLTSAMAAL","PÕÕGLE","PÖÖGLES",
+        "PÜHAJÄRVEL","PÜRSTI",
+        "RAADIL","RAANITSA","RAANITSE","RADI","RAKWERE","RANILA","REOLA",
+        "RIISEPERE","RIIDOJA","RIKHOLSI",
+        "ROOSA","ROOSNA","ROOSNA-HALLIKU","ROPKAS","RUMMUL","RÄPINAS","RÄÄMA","RÕUGES",
+        "S.KÕPU","S.MÕISA","SAADJÄRWE",
+        "SAAREMAA","SAAREMAAL,PIHTLA","SAAREMAAL,UUEMÕISA","SAAREMÕISA",
+        "SADOLA","SADUKÜLA","SADUKÜLAS","SAGADI","SAIUS-TAHKVERE","SALOTSI-ORAJÕE",
+        "SAMMA","SANGASET","SANGASTES","SAUGAS","SAULEPI","SELLISTE",
+        "SINDI A","SINDI ALEV","SINDIS",
+        "SOMERU","SOOSAARE","SOOSARE","SOOTAGAL","SOOTIIGI",
+        "SUURE-KAMBJA","SUURE-KONGOTA","SUURE-RÕNGU","SUUREAUTSI",
+        "SULUSTVERE","SURJU","SURJUS, UULU",
+        "SÕMMERPALU","SÖÖDI",
+        "TAABRI","TAAGAPERA","TAAGIPERA","TAHULA","TAMME","TAMMES","TAMMIKUS","TAMNA","TAMSALU",
+        "TAPA ALEV","TAPAL","TAPIKU","TARGU","TARTUMAAL","TARU","TARWASTU",
+        "TEABLA","TERRASTVERE","TIMO","TOILA","TORIS","TUDU","TUHALA",
+        "TÄHEVER","TÄHEVERE","TÄHKVERE","TÄHKWERES","TÄHTVERES","TÄHTWERE","TÄNASILMA",
+        "TÕDVA-KÕNNU","TÕLISTE","TÕLLUSTE","TÕRVA","TÕRVANDI","TÕRVAS","TÜRSAMÄE",
+        "U-SUISLEPA","U-TÄNASILMA","U-VÄNDRA","U.KARISTE",
+        "UDDERNA","UDERNAS","UDEVA","UDRIKU","ULVI","UNDALA","UNGRUS","UNIPIHA","USNA",
+        "UUDEKÜLA","UUE VÄNDRA","UUE-ANTSLA","UUE-BORNUSE","UUE-MÕISA","UUE-NURSI","UUE-NURSIS",
+        "UUE-OTEPÄÄ","UUE-PORNUSE","UUE-WÄNDRA","UUE-WÕIDU","UUEMÕISAS",
+        "UUS-ANTSLA","UUS-KARISTE","UUS-SUISLEPA","UUS-SUISLEPE","UUS-VÄNDRA",
+        "V-KARISTE","V-SUISLEPA","V-TÄNASSILMA","V.-KASARITSA","V.-PÕLTSAMAA",
+        "V.KARISTU","V.KUUSTSE","V.PRANGLI","V.SUISLEPA","V.VANDRA",
+        "VAIKMA","VAINJÄRVE","VAJANGU,EINMANNI",
+        "VALGAS","VALGTA","VALGVE",
+        "VANA PÕLTSAMAA","VANA PÕLTSAMAAL","VANA-ANTLSA","VANA-ANTSALA",
+        "VANA-KASARITSA","VANA-KOIDA","VANA-KOIOLA","VANA-KOIOLAS","VANA-KUSTE",
+        "VANA-PÄRNU","VANA-PIIGANDI","VANA-PIIGANDIS","VANA-PIIGASTE",
+        "VANA-ROOSNA","VANA-ROSSA","VANA-SUISLEPA","VANA-TÄNASSILMA","VANA-TÄNNASILMA",
+        "VANA-VANDRE","VANA-VIGALA",
+        "VAO KÜLAS,VÄINJÄRVE","VAOLINNA","VARBUSE","VARBUSES, KIOMA",
+        "VASTRE-ROOSA","VASTSE NÕO","VASTSE OTEPÄÄ","VASTSE PIIGASTES","VASTSE-NÕO",
+        "VASULA","VELISE-VALGUS","VESKE","VIDRIKES","VIHTREPALU","VIHULAS","VIITENA","VIITNA",
+        "VIRU","VIRU MK.","VIRU-ROELA","VIRUMAAL,SALLA","VOLDI","VOLDIS","VOORU","VORMSIS",
+        "VÄINJÄRWE","VÄLTA K","VÄNDRA","VÄÄTSA",
+        "VÕIDU","VÕISIKU","VÕNNUS","VÕRUMAA","VÕRU MAAK.","VÕÕPSU","VÜÜBSTE",
+        "W.WÄNDRAS","WALGA","WALGJÄRWE","WANA-ANTSLA","WANA-KOIDA","WANA-KUSTE",
+        "WANA-SUISLEPA","WANA-TÄNASSILMA","WANA-VIGALAS","WANA-WÕIDU","WANA-WÄNDRA",
+        "WARBLA","WARBOLA","WARA","WASTEMÕISA","WESNERI",
+        "WILJANDI","WILJANDIS","WILUWERE","WIRU-JAKOBIS","WOHNJA","WOKA",
+        "WÄINJÄRWE","WÕLLA","WÕNNU","WÕSU","WÜTINA","LETHSE","LÄÄNEMAAL,MASSU","LÄÄNEMAAL,SUUREMÕIAS","NURME","OHTU","PARIKAL","PARME","PARNU","SUURE","TARUMA","U VÕIDU","NARVAS"
+      ) ~ "Eesti",
+      
+      # Venemaa
+      synnikoht_puhas %in% c("BARNAULI","JAMBURG","JAMBURGI","JAMBURGIS","JAMBUR","JAMBURIS","PIHKVA KUB","PIHKVAS","PIHKVA KUB.","PIHKWA","PIHVA","PIHVKA", "SIMBIRSKI","SIMBIRSKI KUB.","SIMBISSKI KUBERMANGUS","TOMSKIS","TOMSKI","TOMSKI KUB","ALTAI","ALTAI KUB.","ASTRAHANI","GATŠINA","GATŠINAS","GOTŠINA","GATSERINA","GATSERINA V ?","LUUGA","LUUGA MAAKOND","LUUGA MK.","MINSKI","NOVO-NIKOLAEVSKI","OMSKI","OMSKI KUB.","OUDOVA","OUDOVA KREISIS","OUDOVA MK",
+"PENSAS","PENSA","POKROVSKI","SAMAARA","SAMAARA KUB","SAMAARA KUB.","SARATOVI","SIBERIS","SIBERI","SIBIR","VOLOGDA","VOLOGDAS?","VALOGDA","ARHANGELSKI","BOROVITSCHI","GDOV","IBROSKA",
+"ISAKOWOS","JAROSLAVI KUB","JAROSLAVI KUBERMANGUS","JEROSLAV","JEROSLAVIS","KAASANI","KAASANIS",
+"KRONSTAADI","KROONLINN","PETERHOFIS","PETERHOVI","PETRAGRADI","PORCHOVA","PORHOV","PORNOVI","SESTRORETSKIS","TAMBOV","TVERI","TVERI KUB","TOROPETS","TOROPETSI","TOROPETSI MAAKOND","TOROPETSI MK.","TOROPITSA","TSARSKOE-SELO","TŠERNOBAEVI","UFA KRAI","NIZNI-NOVGORODI","NOVGORODI","ORELLI KUB.","ORLOWIS","ORSKI","ORUSKI","OPORINO","YORSKI","ZARETSJES AUDOVA MAAK.","KIEV","KIEVIS","KIIEWI","HARKOV","HARKOWIS","GRODNO OBLAST","BAKU","BAKUU","BAKU?","KAUKAASIA","KAUKAASIAS","KAUKAASUSE",
+"KAUKASIAS","KAUKASUSES","ALME K, KAUKAASIA","DOONI RING- JEISKI","URUSKI","TASCHKENDI","TASCHKENTIS","TAŠKENDI","KOKANDIL, TURKESTANIS","KONSTANTINOVSKI MK","VITE?SKI KUB, D???AKI KR","VENAMAA","NSV","PIHKWA KUB."
+      ) ~ "Venemaa",
+      
+      # teised riigid
+      synnikoht_puhas == "HELSINGI" ~ "Soome",
+      synnikoht_puhas == "ISTANBULI" ~ "Türgi",
+      synnikoht_puhas == "KAUNASE MAAK." ~ "Leedu",
+      synnikoht_puhas == "VENEMAA" ~ "Venemaa",
+      synnikoht_puhas %in% c("KURAMAA","KURAMAAL","LÄTI","VINDAV","MIITAVIS","MIITAWI","LIIBAVI","VÄIKE-IRBENIS,KURAMAAL") ~ "Läti",
+      synnikoht_puhas == "SUVALKI" ~ "Poola",
+      synnikoht_puhas == "VARSSAVI" ~ "Poola",
+      synnikoht_puhas == "VILNO" ~ "Leedu",
+      
+      TRUE ~ synniriik_loplik
+    )
+  )
+
+riik<-PR %>%
+  count(synniriik_loplik, sort = TRUE) %>%
+  head(100)
+
+##puhastan sünniriigi andmed
+PR <- PR %>%
+  mutate(
+    synniriik_loplik = case_when(
+      
+      # =========================
+      # EESTI
+      # =========================
+      str_to_upper(synniriik_loplik) == "EESTI" ~ "Eesti",
+      
+      # =========================
+      # VENEMAA (kõik variandid)
+      # =========================
+      str_detect(synniriik_loplik, regex(
+        "VENEM|LENINGRAD|PETER|MOSK|SIBER|TOMSK|PIHKVA|JAMBURG|KROONLINN|NOVGOROD|NSVL|NÕUK",
+        ignore_case = TRUE)) ~ "Venemaa",
+      
+      # =========================
+      # LÄTI
+      # =========================
+      str_detect(synniriik_loplik, regex("LÄTI|RIIA|LÄTIMAA|LÜTIMA", ignore_case = TRUE)) ~ "Läti",
+      
+      # =========================
+      # LEEDU
+      # =========================
+      str_detect(synniriik_loplik, regex("LEEDU|KAUNAS|VILNO", ignore_case = TRUE)) ~ "Leedu",
+      
+      # =========================
+      # POOLA
+      # =========================
+      str_detect(synniriik_loplik, regex("POOLA|POOLAMAA|POOLAS", ignore_case = TRUE)) ~ "Poola",
+      
+      # =========================
+      # SOOME
+      # =========================
+      str_detect(synniriik_loplik, regex("SOOME|HELSINGI", ignore_case = TRUE)) ~ "Soome",
+      
+      # =========================
+      # SAKSAMAA
+      # =========================
+      str_detect(synniriik_loplik, regex("SAKSAMAA", ignore_case = TRUE)) ~ "Saksamaa",
+      
+      # =========================
+      # MUUD RIIGID (üksikud)
+      # =========================
+      str_detect(synniriik_loplik, regex("JAAPAN", ignore_case = TRUE)) ~ "Jaapan",
+      str_detect(synniriik_loplik, regex("HIINA", ignore_case = TRUE)) ~ "Hiina",
+      str_detect(synniriik_loplik, regex("GRUUSIA|KAUKAASIA", ignore_case = TRUE)) ~ "Kaukaasia",
+      str_detect(synniriik_loplik, regex("PRANTSUSMAA", ignore_case = TRUE)) ~ "Prantsusmaa",
+      str_detect(synniriik_loplik, regex("ROOTSI", ignore_case = TRUE)) ~ "Rootsi",
+      
+      # =========================
+      # PUUDUVAD
+      # =========================
+      is.na(synnikoht_puhas) ~ "puudub",
+      str_to_upper(synniriik_loplik) == "PUUDUB" ~ "puudub",
+      
+      # =========================
+      # MUU (väga harv / määramata)
+      # =========================
+       TRUE ~ synniriik_loplik   
+    )
+  )
+
+table(PR$synniriik_loplik, useNA = "ifany")
+```
+
+#omavalitsusraamatud
+```{r}
+PR <- PR %>%
+  mutate(raamatu_omavalitsus_puhas = str_remove(raamatu_omavalitsus, " [VL]$"))
+    
+# 1. VALD 1922 (esmane)
+PR <- PR %>%
+  left_join(vald22_tabel, by = c("raamatu_omavalitsus_puhas" = "nimi")) %>%
+  rename(maakond_raamatu_omavalitsus = maakond)
+
+
+# 2. VALD 1938 (ainult kui eelmine NA)
+PR <- PR %>%
+  left_join(vald38_tabel, by = c("raamatu_omavalitsus_puhas" = "nimi")) %>%
+  rename(maakond_38 = maakond) %>%
+  mutate(
+    maakond_raamatu_omavalitsus = case_when(
+      is.na(maakond_raamatu_omavalitsus) & !is.na(maakond_38) ~ maakond_38,
+      TRUE ~ maakond_raamatu_omavalitsus
+    )
+  ) %>%
+  select(-maakond_38)
+
+# 3. KIHELKOND (ainult kui ikka NA)
+PR <- PR %>%
+  left_join(kihelkond_tabel, by = c("raamatu_omavalitsus_puhas" = "nimi")) %>%
+  rename(maakond_kihelkond = maakond) %>%
+  mutate(
+    maakond_raamatu_omavalitsus = case_when(
+      is.na(maakond_raamatu_omavalitsus) & !is.na(maakond_kihelkond) ~ maakond_kihelkond,
+      TRUE ~ maakond_raamatu_omavalitsus
+    )
+  ) %>%
+  select(-maakond_kihelkond)
+
+#vaatan mis seis on
+PR %>% count(maakond_raamatu_omavalitsus,sort = TRUE)#827 tühi
+tyhi<-PR %>% filter(is.na(maakond_raamatu_omavalitsus))
+tyhi %>% count(raamatu_omavalitsus_puhas,sort = TRUE)
+
+PR <- PR %>%
+  mutate(
+    maakond_raamatu_omavalitsus = case_when(
+      raamatu_omavalitsus_puhas %in% c("NÕMME", "PALDISKI") ~ "HARJU",
+      raamatu_omavalitsus_puhas %in% c("MÕISAKÜLA", "MUSTLA") ~ "VILJANDI",
+      raamatu_omavalitsus_puhas %in% c( "VIRU-ROELA","KALVI-MAHU") ~ "VIRU",
+      raamatu_omavalitsus_puhas == "TÕRVA" ~ "VALGA",
+      raamatu_omavalitsus_puhas == "KILINGI-NÕMME" ~ "PÄRNU",
+      raamatu_omavalitsus_puhas %in% c("VOORE-ROELA", "PUURMANI","KALLASTE") ~ "TARTU",
+      TRUE ~ maakond_raamatu_omavalitsus
+    )
+  )
+
+```
+
+#salvestan üle
+```{r}
+
+write_csv(PR, "PR_loplik1_2_valitud_tulbad.csv")
+```
+

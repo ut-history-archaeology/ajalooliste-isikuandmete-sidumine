@@ -1,0 +1,321 @@
+---
+title: "optantide ühendamine I osa - andmestike puhastus ja ettevalmistus"
+output:
+  pdf_document: default
+  html_document: default
+date: "2025-10-04"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+I etapis viisin läbi kolme andmestiku (optantide andmestik,
+Rahvastikuregistri arhiiv ja Pereregister) puhastamise ja ühtlustamise,
+eesmärgiga valmistada need ette tõenäosuslikuks sidumiseks.
+
+Esmalt ühtlustasin nimede kirjapildi, teisendades kõik nimed
+suurtähtedeks ning eemaldades liigsed tühikud. Lisaks standardiseerisin
+teatud tähevariatsioonid (nt š, ž, w), et vähendada ortograafilist
+varieeruvust. Vajalik, kuna nimede kirjapildis on märkimisväärseid
+erinevusi.
+
+Optantide andmestikus ontuletatud sünniaasta vanuse ja saabumisaasta
+põhjal, arvestades võimalikku ±1-aastast viga.
+
+Kõigis andmestikes jaotati mitmeosalised ees- ja perenimed eraldi
+tunnusteks (nimi1 ja nimi2), et võimaldada paindlikumat võrdlust
+sidumisprotsessis. Lisaks eemaldati kirjed, kus nimed sisaldasid
+tuvastamata sümboleid (\*, ?), kuna need viitavad ebakindlale või
+puudulikule andmele.
+
+Rahvastikuregistri arhiivi andmestikus eemaldati nn võltsnimevahetused,
+kus sama isiku kohta esines mitu identse nimega kirjet. See samm
+vähendab duplikaatide mõju sidumisprotsessis.
+
+Pereregistri puhul teisendati andmestik pikale kujule, et iga isiku
+erinevad perenimed oleksid eraldi ridadel. See võimaldab sidumisel
+arvesse võtta nime muutusi ajas.
+
+Kogu protsessi tulemusena saadi kolm ühtlustatud andmestikku (l_opt,
+l_rr, l_pr), mis sisaldavad sidumiseks vajalikke tunnuseid (eesnimi,
+perenimi, sugu, sünniaasta).
+
+```{r}
+library(reclin2)
+library(tidyverse)
+library(dplyr)
+```
+
+# 1. Andmete ettevalmistus
+
+## 1.1 Optantide andmestik
+
+```{r}
+# Andmete sisse lugemine
+optandid <- read_excel("C:/Users/hakar/Desktop/magistritöö materjalid/MAGISTRITÖÖ/ANDMEBAAS/optantide andmebaasVIIMANE.xlsx")
+
+# Nimede ühtlustamine (suurtähed ja tühikute eemaldamine)
+optandid$perekonnanimi <- as.character(toupper(optandid$perekonnanimi))
+optandid$perekonnanimi <- str_trim(optandid$perekonnanimi, side = "both")
+
+optandid$eesnimi <- as.character(toupper(optandid$eesnimi))
+optandid$eesnimi <- str_trim(optandid$eesnimi, side = "both")
+
+# Sünniaasta tuletamine (võimalik ±1 aasta viga)
+optandid$sunniaasta <- optandid$aasta - optandid$vanus
+
+```
+
+### Probleemsete nimede eemaldamine
+
+```{r}
+#Kõik isikud, kelle ees- või perekonnanimes esineb sümbol „*” või „?”, jätan välja, kuna need märgid viitavad andmestiku koostamisel olukorrale, kus nime ei olnud võimalik tuvastada. Narva karantiini nimekirjad on üldjoontes hästi säilinud, kuid kohati on trükikvaliteet olnud kehv või on materjal ajapikku kahjustunud, mistõttu ei ole kõiki nimesid võimalik kindlaks teha. Lisaks jätan välja isikud kellel pole kirjas eesnime, valdavalt need isikud, kes on ristimata st nimi puudub.
+
+# Eemaldan kirjed, kus nimed sisaldavad tuvastamata sümboleid (*, ?)
+optandid <- optandid %>%
+  filter(!grepl("[*?]", perekonnanimi),
+         !grepl("[*?]", eesnimi)) %>%
+  filter(!is.na(eesnimi))
+#Kogu andmestikust 37 108 jääb välja 37 108-36 996 = 112 isikut.
+```
+
+### Mitmeosaliste nimede töötlemine
+
+```{r}
+# Eesnimede jaotamine
+optandid$eesnimi1 <- str_replace_all(optandid$eesnimi, "-", " ")# asendan sidekriipsu tühikuga
+optandid$eesnimi1 <- word(optandid$eesnimi1, 1, 2) # 3+ nimesid ei võta
+
+optandid <- optandid %>%
+  separate(eesnimi1, c("eesnimi1", "eesnimi2"), sep = " ") # kui kaks nime, siis eraldi
+
+optandid$eesnimi1 <- ifelse(is.na(optandid$eesnimi1),
+                           optandid$eesnimi,
+                           optandid$eesnimi1)
+
+# Perenimede jaotamine
+optandid$perekonnanimi1 <- str_replace_all(optandid$perekonnanimi, "-", " ")
+optandid$perekonnanimi1 <- word(optandid$perekonnanimi1, 1, 2)
+
+optandid <- optandid %>%
+  separate(perekonnanimi1, c("perekonnanimi1", "perekonnanimi2"), sep = " ")
+
+optandid$perekonnanimi1 <- ifelse(is.na(optandid$perekonnanimi1),
+                                 optandid$perekonnanimi,
+                                 optandid$perekonnanimi1)
+```
+
+### Sidumiseks vajalikud tunnused
+
+```{r}
+l_opt <- optandid[, c("id","perekonnanimi1","perekonnanimi2",
+                      "eesnimi1","eesnimi2","sugu",
+                      "sunniaasta","perekonnanimi","eesnimi")]
+
+colnames(l_opt) <- c("id","perenimi1","perenimi2",
+                     "eesnimi1","eesnimi2","sugu",
+                     "sunniaasta", "perenimi_algne","eesnimi_algne")
+```
+
+### Kirjapildi standardiseerimine
+
+```{r}
+l_opt <- l_opt %>%
+  mutate(across(c(eesnimi1, perenimi1, eesnimi2, perenimi2),
+                ~ str_replace_all(., c("[ŠŽZ]" = "S", "SCH" = "S", "W" = "V"))))
+```
+
+### Salvestamine
+
+```{r}
+saveRDS(l_opt, "l_opt.rds")
+```
+
+## 1.2 RAHVASTIKUREGISTRI ARHIIV (RR)
+
+Andmeteks kasutan RR arhiivi pikk fail. Seal on ühel isikul nii palju
+ridu kui on eri nimekujusid. Kokku on failis 2 035 095 rida.
+
+Aga probleem on see, et see sisaldab ka võltsnimevahetusi (juhud, kus
+uuel real on toimunud nimevahetus, kuigi ees- ja perenimi jäid täpselt
+samaks). Sellised juhud jätan välja. Alles jääb 1 538 861 rida.
+
+RR arhiivi pikk fail sisaldab infot isikute kohta, kes on sündinud enne
+1923. aastat või kelle puhul on sünniaeg teadmata. Üldjuhul moodustavad
+teadmata sünniajaga isikute grupi enne EW sündinud, aga on ka ajutisi
+migrante seal. Teadmata sünniajaga on 1/3 isikutest.
+
+```{r}
+rr <- readRDS("opt_rr_pikk.rds")
+```
+
+### Andmestiku korrastamine
+
+```{r}
+#Võltsnimevahetuste eemaldamin
+rr <- rr %>%
+  arrange(C2_ISIKU_VIIDE, c2_NimemuutuseKP) %>%
+  group_by(C2_ISIKU_VIIDE) %>%
+  mutate(enum = row_number()) %>%
+  mutate(eelm_sama = ifelse(
+    C2_ISIKU_VIIDE == lag(C2_ISIKU_VIIDE) &
+      c2_Eesnimi == lag(c2_Eesnimi) &
+      c2_Perenimi == lag(c2_Perenimi),
+    1, 0
+  )) %>%
+  filter(is.na(eelm_sama) | eelm_sama == 0) # 1,538,861
+  
+# Sidumiseks vajalikud tunnused
+l_rr <- rr[, c("C2_ISIKU_VIIDE","c2_Perenimi","c2_Eesnimi",
+               "a1_Sugu_Kdkood","sunniaasta",
+               "a1_SynniKP","surmaaasta")]
+
+colnames(l_rr) <- c("C2_ISIKU_VIIDE","perenimi","eesnimi",
+                    "sugu","sunniaasta","sunnikp","surmaaasta")
+
+# Soo ühtlustamine
+l_rr$sugu <- ifelse(l_rr$sugu == "M", "m", "n")
+```
+
+### Mitmeosaliste nimede töötlemine
+
+```{r}
+# Eesnimede jaotamine
+l_rr$eesnimi1 <- str_replace_all(l_rr$eesnimi, "-", " ")
+l_rr$eesnimi1 <- word(l_rr$eesnimi1, 1, 2)
+
+l_rr <- l_rr %>%
+  separate(eesnimi1, c("eesnimi1","eesnimi2"), sep = " ")
+
+l_rr$eesnimi1 <- ifelse(is.na(l_rr$eesnimi1),
+                       l_rr$eesnimi,
+                       l_rr$eesnimi1)
+# Perenimede jaotamine
+l_rr$perenimi1 <- str_replace_all(l_rr$perenimi, "-", " ")
+l_rr$perenimi1 <- word(l_rr$perenimi1, 1, 2)
+
+l_rr <- l_rr %>%
+  separate(perenimi1, c("perenimi1","perenimi2"), sep = " ")
+
+l_rr$perenimi1 <- ifelse(is.na(l_rr$perenimi1),
+                        l_rr$perenimi,
+                        l_rr$perenimi1)
+```
+
+### Kirjapildi standardiseerimine
+
+```{r}
+l_rr <- l_rr %>%
+  mutate(across(c(eesnimi1, perenimi1, eesnimi2, perenimi2),
+                ~ str_replace_all(., c("[ŠŽZ]" = "S", "SCH" = "S", "W" = "V"))))
+```
+
+### Salvestamine
+
+```{r}
+saveRDS(l_rr,"l_rr.rds")
+```
+
+## 1.3 Pereregister
+
+Sisaldab infot isiku ja tema abikaasa ja laste kohta. Loodud 1926.
+aastast alates, mistõttu inimesed, kes 1926 alates ei abiellunud ega
+saandu lapsi, on osaliselt puudu. Samuti on andmestikus sõjakaod,
+mistõttu kogu rahvastik ei kajastu.
+
+Erinevalt RR-st ei ole perenime ja eesnime vahetused samaaegsed. Ehk
+siis loogika eesnimi ja perenimi oli ajavahemikus x ja y inimesel.
+Pereregister on ülesehitatud nii, et ühe isiku andmed on kõik ühel real.
+Loon pereregistrist faili, kus iga isiku kohta on nii palju ridu kui on
+tal erinevaid perenimesid.
+
+### Andmestik:
+
+```{r}
+opt_pr <- readRDS("opt_pr.rds") #ühe isiku andmed kõik samal real sh eri nimekujud
+```
+
+### Perenimede pikaks vormiks teisendamine
+
+```{r}
+katse <- opt_pr[, c(1:2, 8:12)]
+
+katse$isik_perenimi <- ifelse(katse$isik_perenimi == "", NA, katse$isik_perenimi)
+katse$isik_perenimi_endine1 <- ifelse(katse$isik_perenimi_endine1 == "", NA, katse$isik_perenimi_endine1)
+katse$isik_perenimi_endine2 <- ifelse(katse$isik_perenimi_endine2 == "", NA, katse$isik_perenimi_endine2)
+katse$isik_perenimi_endine3 <- ifelse(katse$isik_perenimi_endine3 == "", NA, katse$isik_perenimi_endine3)
+katse$isik_perenimi_endine4 <- ifelse(katse$isik_perenimi_endine4 == "", NA, katse$isik_perenimi_endine4)
+
+katse <- pivot_longer(katse,
+                      cols = 3:7,
+                      names_to = "perenimi_nr",
+                      values_to = "perenimi",
+                      values_drop_na = TRUE)
+
+katse <- katse %>%
+  group_by(jrknr) %>%
+  mutate(enum_pn = row_number())
+
+opt_pr_pikk <- merge(katse,
+                     opt_pr[c(1:2, 13:151)],
+                     by = "jrknr",
+                     all.x = TRUE)
+
+```
+
+### Sidumiseks vajalikud tunnused
+
+```{r}
+l_pr <- opt_pr_pikk[, c("jrknr","OID.x","perenimi_nr","perenimi",
+                        "isik_eesnimi","isik_eesnimi_endine1",
+                        "isik_eesnimi_endine2","isik_sugu",
+                        "isik_synniaasta","isik_synnikuu","isik_synnipaev")]
+
+colnames(l_pr) <- c("jrknr","OID","perenimi_nr","perenimi",
+                    "eesnimi","eesnimi_endine1","eesnimi_endine2",
+                    "sugu","sunniaasta","sunnikuu","sunnipaev")
+```
+
+### soo ühtlustamine
+
+```{r}
+l_pr$sugu <- ifelse(l_pr$sugu == 1, "m", "n")
+```
+
+### Mitmeosaliste nimede töötlemine
+
+```{r}
+l_pr$eesnimi1 <- str_replace_all(l_pr$eesnimi, "-", " ")
+l_pr$eesnimi1 <- word(l_pr$eesnimi1, 1, 2)
+
+l_pr <- l_pr %>%
+  separate(eesnimi1, c("eesnimi1","eesnimi2"), sep = " ")
+
+l_pr$eesnimi1 <- ifelse(is.na(l_pr$eesnimi1),
+                       l_pr$eesnimi,
+                       l_pr$eesnimi1)
+
+l_pr$perenimi1 <- str_replace_all(l_pr$perenimi, "-", " ")
+l_pr$perenimi1 <- word(l_pr$perenimi1, 1, 2)
+
+l_pr <- l_pr %>%
+  separate(perenimi1, c("perenimi1","perenimi2"), sep = " ")
+
+l_pr$perenimi1 <- ifelse(is.na(l_pr$perenimi1),
+                        l_pr$perenimi,
+                        l_pr$perenimi1)
+```
+
+### Kirjapildi standardiseerimine
+
+```{r}
+l_pr <- l_pr %>%
+  mutate(across(c(eesnimi1, perenimi1, eesnimi2, perenimi2),
+                ~ str_replace_all(., c("[ŠŽZ]" = "S", "SCH" = "S", "W" = "V"))))
+```
+
+### Salvestamine
+
+```{r}
+saveRDS(l_pr, "l_pr.rds")
+```

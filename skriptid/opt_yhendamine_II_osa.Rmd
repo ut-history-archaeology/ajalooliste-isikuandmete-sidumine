@@ -1,0 +1,471 @@
+---
+title: "optantide ühendamine II osa - andmestike ühendamine"
+output: html_document
+date: "2025-10-06"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# **2. Andmestike ühendamine**
+
+Selles etapis viisin läbi andmestike tõenäosusliku sidumise, mille
+eesmärk oli leida igale optantide andmestikus olevale isikule
+potentsiaalne vaste Rahvastikuregistri ja Pereregistri andmestikust.
+
+Sidumiseks kasutatavad tunnused - sugu, sünniaasta, eesnimi, perenimi.
+
+Sidumine toimub kahte sorti tunnustega:
+
+-   I blokeerivad tunnused - need tunnused peavad 100% kokku minema.
+    Nende tunnustega luuakse võimalike paaride universum. (sugu,
+    sünniaasta)
+
+-   II ei pea 100% kokku minema, nende pealt otsitakse parimat vastet.
+    (ees-, perenimi)
+
+    tööetapid:
+
+1.  Blokeerivate tunnuste abil võrreldes otsin ainult neid kirjeid,
+    mille sugu ja sünniaasta kattuvad. See on vajalik arvutuskoormuse
+    vähendamiseks suurte andmemahtude puhul.
+
+2.  Nimede sarnasuse arvutamine, kasutades Jaro–Winkleri meetodit.
+
+3.  Hindasin iga kirjepaari puhul tõenäosust, et tegemist on sama
+    isikuga, kasutades Expectation-Maximization algoritmil põhinevat
+    tõenäosuslikku mudelit. Tulemuseks on iga paari kohta arvutatud kaal
+    (weights), mis väljendab vastavuse tõenäosust.
+
+4.  Lõpuks valisin iga optandi kohta kõige tõenäolisem vaste kasutades
+    greedy-meetodit. See tähendab, et igale kirjele jäeti alles ainult
+    kõrgeima tõenäosusega vaste.
+
+    Märkus - käesolevas koodis kasutatakse greedy-valikut ilma läveta
+    (`threshold = 0`), mis tähendab, et kõik positiivse tõenäosusega
+    vasted jäävad esialgu alles, et säilitada võimalikult lai
+    kandidaatide hulk edasiseks hindamiseks.
+
+Esmalt on seotud optandid Rahvastikuregistriga (RR) ning seejärel
+Pereregistriga (PR).
+
+```{r}
+library(reclin2)
+library(tidyverse)
+library(dplyr)
+```
+
+## 2.1 Optantide ja RR sidumine
+
+RR arhiivis pole infot sünniaja kohta kõigil isikutel. Seetõttu kõige
+pealt seon ainult sünniaastaga isikud ja siis ilma.
+
+```{r}
+#vajalikud failid
+l_opt<-readRDS("l_opt.rds")
+l_rr<-readRDS("l_rr.rds")
+```
+
+### 2.1.1 RR I sidumine (õige aasta)
+
+```{r}
+#ainult sünniaastaga isikud
+l_rr<-l_rr %>% filter(!is.na(sunniaasta)) # 1,538,861->1,061,624
+
+#1.	Võimalike paaride andmestik (blocking)
+p<-pair_blocking(l_opt,l_rr,on = c("sugu","sunniaasta")) 
+#Tulemuseks on 292,545,312 potentsiaalset paari
+
+#2. Eesnime ja perenime sarnasuse arvutamine
+# Iga potentsiaalse paari puhul arvutatakse nimede sarnasuse koefitsient Jaro–Winkleri algoritmi abil. 
+compare_pairs(p, on=c("perenimi1","eesnimi1"), 
+              default_comparator = cmp_jarowinkler(0.9),inplace = TRUE)
+print(p) 
+#3.	EM-algoritmil põhineva tõenäosusmudeli loomine
+m<-problink_em(~perenimi1+eesnimi1, data=p)
+print(m)
+#4. Mudeli tulemuste rakendamine ja tõenäosuste lisamine
+#Funktsioon predict() rakendab loodud mudelit olemasolevatele paaridele ja lisab iga paari juurde hinnangulise tõenäosuse, mis väljendab, kui kindel on mudel, et tegemist on sama isikuga. Tulemuseks on andmestik, kus igale paarile on omistatud match weight ehk kaalutud tõenäosus. 
+p<-predict(m, pairs=p,add=T)
+
+#5. Algsete identifikaatorite lisamine
+p<-add_from_x(p,"id")
+p<-add_from_y(p,"C2_ISIKU_VIIDE")
+
+#6. Tõenäolisemate vastete valik
+#Kasutades “greedy” valikumeetodit, säilitati iga optandi jaoks ainult kõige tõenäolisem vaste — see tähendab, et valiti paar, millel oli suurim hinnanguline match weight.
+#Lävend threshold = 0 tagab, et valik hõlmab kõiki positiivse tõenäosusega vasteid.
+
+p<-select_greedy(p,"weights",var = "greedy",threshold = 0) 
+p<-p %>% filter(greedy=="TRUE") # 35,879 ehk siis enamus optndid said seose
+# aga lävend on madal, seega siin on palju kehvi tulemusi.
+
+#7. Sidumise tulemused
+koos<-link(p,all_x = T,all_y = F)
+koos<-merge(koos,p[,3:7],by = "id",all.x = T)
+koos<-koos %>% arrange(desc(weights)) # reastan paremast lingist kehvema suunas
+koos<-koos[,c("weights","eesnimi1","perenimi1","eesnimi1.x","eesnimi1.y","perenimi1.x",
+              "perenimi1.y","id","pere_ID","sugu.x","sunniaasta.x","eesnimi2.x","eesnimi2.y",
+              "perenimi2.x","perenimi2.y","C2_ISIKU_VIIDE.y","sugu.y",
+              "sunniaasta.y")]
+# 6.79 on täielik seos ehk nii eesnimi kui perenimi on identsed
+koos %>% filter(weights>6) %>% summarise(n()) # 4200
+koos<-koos%>%filter(!is.na(weights))#35879
+```
+
+### 2.1.2 RR II sidumine (-1 sünniaastaga)
+
+```{r}
+l_opt$sunniaasta_m1<-l_opt$sunniaasta-1
+colnames(l_rr)[5]<-"sunniaasta_m1"
+p<-pair_blocking(l_opt,l_rr,on = c("sugu","sunniaasta_m1")) #286 159 774 potentsiaalset paari
+
+compare_pairs(p, on=c("perenimi1","eesnimi1"), 
+              default_comparator = cmp_jarowinkler(0.9),inplace = T)
+
+m<-problink_em(~perenimi1+eesnimi1, data=p)
+p<-predict(m, pairs=p,add=T)
+
+p<-add_from_x(p,"id")
+p<-add_from_y(p,"C2_ISIKU_VIIDE")
+
+p<-select_greedy(p,"weights",var = "greedy",threshold = 0) 
+p<-p %>% filter(greedy=="TRUE")
+
+koos1<-link(p,all_x = T,all_y = F)
+koos1<-merge(koos1,p[,3:7],by = "id",all.x = T)
+koos1<-koos1 %>% arrange(desc(weights))
+
+koos1<-koos1[,c("weights","eesnimi1","perenimi1","eesnimi1.x","eesnimi1.y","perenimi1.x",
+              "perenimi1.y","id","pere_ID","sugu.x","sunniaasta_m1.x","eesnimi2.x","eesnimi2.y",
+              "perenimi2.x","perenimi2.y","C2_ISIKU_VIIDE.y","sugu.y",
+              "sunniaasta_m1.y")]
+# 6.57 on siis täielik seos ehk nii eesnimi kui perenimi on identsed
+koos1 %>% filter(weights>6) %>% summarise(n()) #3333
+
+koos1<-koos1%>%filter(!is.na(weights))#35879
+```
+
+### 2.1.3 RR III sidumine (+1 sünniaastaga)
+
+```{r}
+l_opt$sunniaasta_p1<-l_opt$sunniaasta+1
+colnames(l_rr)[5]<-"sunniaasta_p1"
+
+p<-pair_blocking(l_opt,l_rr,on = c("sugu","sunniaasta_p1")) #286 159 774 potentsiaalset paari
+
+compare_pairs(p, on=c("perenimi1","eesnimi1"), 
+              default_comparator = cmp_jarowinkler(0.9),inplace = T)
+
+m<-problink_em(~perenimi1+eesnimi1, data=p)
+p<-predict(m, pairs=p,add=T)
+
+p<-add_from_x(p,"id")
+p<-add_from_y(p,"C2_ISIKU_VIIDE")
+
+p<-select_greedy(p,"weights",var = "greedy",threshold = 0) 
+p<-p %>% filter(greedy=="TRUE")
+
+koos2<-link(p,all_x = T,all_y = F)
+koos2<-merge(koos2,p[,3:7],by = "id",all.x = T)
+koos2<-koos2 %>% arrange(desc(weights))
+
+koos2<-koos2[,c("weights","eesnimi1","perenimi1","eesnimi1.x","eesnimi1.y","perenimi1.x",
+               "perenimi1.y","id","pere_ID","sugu.x","sunniaasta_p1.x","eesnimi2.x","eesnimi2.y",
+               "perenimi2.x","perenimi2.y","C2_ISIKU_VIIDE.y","sugu.y",
+               "sunniaasta_p1.y")]
+# 6.57 on siis täielik seos ehk nii eesnimi kui perenimi identsed
+koos2 %>% filter(weights>5.9) %>% summarise(n()) #1487
+koos2<-koos2%>%filter(!is.na(weights))#35880
+```
+
+KOKKUVÕTE SIDUMISED RR. Siin on kõik seose saanud paarid kolme erineva
+aasta variandiga. Ei ole filtreeritud mingil moel tulemust.
+
+```{r}
+# RR kokkuvõte
+yhendused<-bind_rows(koos,koos1,koos2)%>%
+  arrange(id)
+saveRDS(yhendused,"rr_sidumine_3tk_erisynniaeg.rds")
+```
+
+### RR tugevad seosed
+
+```{r}
+#osa I - rr aastaga, õige aasta, lõpu andmete filtrimine
+    ###   tugev seos 6597 optanti   ### 
+    #määran käsitsi vaatluse põhjal tugeva seose määra
+
+#perenimi kattub 100% ja weights piirmäära jaoks vaatan eesnimede kirjapilti
+koos_perenimi100 <- koos %>%
+filter(perenimi1 == 1, weights > 4.5)#5288
+#eesnimi kattub 100% ja weights piirmäära jaoks vaatan perenimede kirjapilti
+koos_perenimi100 <- koos %>%
+koos_eesnimi100 <- koos %>%
+  filter(eesnimi1 == 1, weights > 3.89)#5531
+# Ühendan tugeva perekonnanime- ja eesnimevastavuse andmestikud
+opt <- bind_rows(koos_eesnimi100, koos_perenimi100) %>%
+  arrange(desc(weights)) %>%
+  distinct(id, .keep_all = TRUE)
+
+    
+#osa II - rr aastaga, m1 aasta, lõpu andmete filtrimine
+### tugev seos -1 aastaga  5099 optanti ###
+koos1_perenimi100 <- koos1 %>%
+  filter(perenimi1 == 1, weights > 4.429323) #4242
+
+koos1_eesnimi100 <- koos1 %>%
+  filter(eesnimi1 == 1, weights > 3.886259) #4195
+
+opt1 <- bind_rows(koos1_eesnimi100, koos1_perenimi100) %>%
+  arrange(desc(weights)) %>%
+  distinct(id, .keep_all = TRUE)
+
+#osa III - rr aastaga, p1 aasta, lõpu andmete filtrimine
+### tugev seos +1 aastaga  2052 optanti ###
+koos2_perenimi100 <- koos2 %>%
+  filter(perenimi1 == 1, weights > 3.977974)#1720
+
+koos2_eesnimi100 <- koos2 %>%
+  filter(eesnimi1 == 1, weights > 3.862265)#1821
+
+opt2 <- bind_rows(koos2_eesnimi100, koos2_perenimi100) %>%
+  arrange(desc(weights)) %>%
+  distinct(id, .keep_all = TRUE)
+
+#KOKKUVÕTE TUGEVATEST SEOSTEST
+rr_tugevad_seosed <-bind_rows(opt,opt1,opt2)%>%
+  arrange(id) #13748
+saveRDS(rr_tugevad_seosed,"rr_tugevad_seosed.rds")
+rr_tugevad_seosed_uniq<-rr_tugevad_seosed%>%
+  distinct(id, .keep_all=T) #11303
+```
+
+### RR ilma sünniaastata
+
+Eemaldan senised tugeva seose saanud ja vaatan ainult ilma ühenduseta ja
+nõrga ühendusega alles jäänud optante. Loon seosed optantide ja nende
+vahel, kel pole RR-s sünniaega.
+
+```{r}
+#unikaalsed optandid rr seostest
+rr_opt_seosed<-rr_tugevad_seosed%>%
+  distinct(id) #13748
+ilma_rr_seoseta<-anti_join(l_opt,rr_opt_seosed,by="id")#26 028
+
+l_rr<-readRDS("l_rr.rds")
+colnames(l_rr)[5]<-"sunniaasta"
+l_rr_ilma<-l_rr %>% filter(is.na(sunniaasta)) # 1,538,861->477,237
+
+p<-pair_blocking(ilma_rr_seoseta,l_rr_ilma,on = c("sugu","eesnimi1")) 
+compare_pairs(p, on=c("perenimi1"), 
+              default_comparator = cmp_jarowinkler(0.9),inplace = T)
+
+m<-problink_em(~perenimi1, data=p)
+p<-predict(m, pairs=p,add=T)
+
+p<-add_from_x(p,"id")
+p<-add_from_y(p,"C2_ISIKU_VIIDE")
+
+p<-select_greedy(p,"weights",var = "greedy",threshold = 0) 
+p<-p %>% filter(greedy=="TRUE") 
+
+koos3<-link(p,all_x = T,all_y = F)
+koos3<-merge(koos3,p[,3:6],by = "id",all.x = T)
+koos3<-koos3 %>% arrange(desc(weights))
+
+
+koos3<-koos3[,c("weights","perenimi1","eesnimi1.x","eesnimi1.y","perenimi1.x",
+    "perenimi1.y","id","pere_ID","sugu.x","sunniaasta.x","eesnimi2.x","eesnimi2.y",
+    "perenimi2.x","perenimi2.y","C2_ISIKU_VIIDE.y","sugu.y",
+    "sunniaasta.y")]
+koos3 %>% filter(weights>6.5) %>% summarise(n()) # 4065
+koos3<-koos3%>%filter(!is.na(weights))#24153
+
+### tugev seos ilmaaasatata RRis 5881 optanti ###
+opt3<-koos3[koos3$weights>0.5892822,]#5881 
+opt3<-opt3%>%
+  arrange(desc(weights))
+
+saveRDS(koos3,"rr_sidumine_ilama_aastata.rds")
+saveRDS(opt3,"rr_tugevad_seosed_ilma_aastata.rds")
+```
+
+### RR kõik seosed
+
+RR tugevad seosed koondfail õige aasta, -1, +1, ilma aastata
+
+```{r}
+rr_tugevad_seosed_4_varianti <-bind_rows(opt,opt1,opt2,opt3)%>%
+  arrange(id) #17184
+
+saveRDS(rr_tugevad_seosed_4_varianti,"koik_RR_tugevad_seosed_6.11.rds")
+```
+
+RR KÕIK FAILID:
+
+```{r}
+# failid
+# tugevad seosed RR(õige aasta, -1, +1 = opt, opt1, opt2) 
+rr_tugevad_seosed_3tk<- readRDS("rr_tugevad_seosed.rds")#13478
+# kõik tugevad RR seosed ehk ilma aastata on siin juures   
+rr_tugevad_seosed_4tk<- readRDS("koik_RR_tugevad_seosed_6.11.rds")#19629
+#ilma aastata tugev seos
+rr_tugevad_seosed_ilmaasta<-readRDS("rr_tugevad_seosed_ilma_aastata.rds")
+
+# RR kõik saadud seosed õige aasta, -1, +1 =koos, koos1, koos2) 
+rr_sidumine<-readRDS("rr_sidumine_3tk_erisynniaeg.rds")#107 638
+# RR kõik saadus seosed ilma aastata
+rr_sidumine_ilma_aastata<- readRDS("rr_sidumine_ilama_aastata.rds")#24 153
+```
+
+## 2.2 Optantide ja PR sidumine
+
+failid
+
+```{r}
+l_opt<-readRDS("l_opt.rds")
+l_pr<-readRDS("l_pr.rds")
+```
+
+### 2.2.1 PR I sidumine (õige aasta)
+
+```{r}
+p<-pair_blocking(l_opt,l_pr,on = c("sugu","sunniaasta"))
+compare_pairs(p, on=c("perenimi1","eesnimi1"), 
+              default_comparator = cmp_jarowinkler(0.9),inplace = T)
+
+m<-problink_em(~perenimi1+eesnimi1, data=p)
+p<-predict(m, pairs=p,add=T)
+
+p<-add_from_x(p,"id")
+p<-add_from_y(p,"jrknr")
+
+p<-select_greedy(p,"weights",var = "greedy",threshold = 0) 
+p<-p %>% filter(greedy=="TRUE") 
+
+koos<-link(p,all_x = T,all_y = F)
+koos<-merge(koos,p[,3:7],by = "id",all.x = T) 
+koos<-koos %>% arrange(desc(weights))
+
+koos<-koos[,c("weights","eesnimi1","perenimi1","eesnimi1.x","eesnimi1.y","perenimi1.x",
+              "perenimi1.y","id","pere_ID","sugu.x","sunniaasta.x","eesnimi2.x","eesnimi2.y",
+              "perenimi2.x","perenimi2.y","jrknr.y","sugu.y",
+              "sunniaasta.y")]
+
+
+###   TULEMUS  8815 tugevat seost  ### 
+koos %>% filter(weights>6) %>% summarise(n()) #5224
+koos<-koos%>%filter(!is.na(weights))#35852
+```
+
+### 2.2.2 PR II sidumine (-1 sünniaastaga)
+
+```{r}
+l_opt$sunniaasta_m1<-l_opt$sunniaasta-1
+colnames(l_pr)[9]<-"sunniaasta_m1"
+
+p<-pair_blocking(l_opt,l_pr,on = c("sugu","sunniaasta_m1")) 
+compare_pairs(p, on=c("perenimi1","eesnimi1"), 
+              default_comparator = cmp_jarowinkler(0.9),inplace = T)
+
+m<-problink_em(~perenimi1+eesnimi1, data=p)
+p<-predict(m, pairs=p,add=T)
+
+p<-add_from_x(p,"id")
+p<-add_from_y(p,"jrknr")
+
+p<-select_greedy(p,"weights",var = "greedy",threshold = 0) 
+p<-p %>% filter(greedy=="TRUE")
+
+koos1<-link(p,all_x = T,all_y = F)
+koos1<-merge(koos1,p[,3:7],by = "id",all.x = T)
+koos1<-koos1 %>% arrange(desc(weights))
+
+koos1<-koos1[,c("weights","eesnimi1","perenimi1","eesnimi1.x","eesnimi1.y","perenimi1.x",
+                "perenimi1.y","id","pere_ID","sugu.x","sunniaasta_m1.x","eesnimi2.x","eesnimi2.y",
+                "perenimi2.x","perenimi2.y","jrknr.y","sugu.y",
+                "sunniaasta_m1.y")]
+
+koos1 %>% filter(weights>6) %>% summarise(n()) #4036
+koos1<-koos1%>%filter(!is.na(weights))#35844
+```
+
+### 2.2.3 PR III sidumine (+1 sünniaastaga)
+
+```{r}
+l_opt$sunniaasta_p1<-l_opt$sunniaasta+1
+colnames(l_pr)[9]<-"sunniaasta_p1"
+
+p<-pair_blocking(l_opt,l_pr,on = c("sugu","sunniaasta_p1"))
+compare_pairs(p, on=c("perenimi1","eesnimi1"), 
+              default_comparator = cmp_jarowinkler(0.9),inplace = T)
+
+m<-problink_em(~perenimi1+eesnimi1, data=p)
+p<-predict(m, pairs=p,add=T)
+
+p<-add_from_x(p,"id")
+p<-add_from_y(p,"jrknr")
+
+p<-select_greedy(p,"weights",var = "greedy",threshold = 0) 
+p<-p %>% filter(greedy=="TRUE")
+
+koos2<-link(p,all_x = T,all_y = F)
+koos2<-merge(koos2,p[,3:7],by = "id",all.x = T)
+koos2<-koos2 %>% arrange(desc(weights))
+
+koos2<-koos2[,c("weights","eesnimi1","perenimi1","eesnimi1.x","eesnimi1.y","perenimi1.x",
+                "perenimi1.y","id","pere_ID","sugu.x","sunniaasta_p1.x","eesnimi2.x","eesnimi2.y",
+                "perenimi2.x","perenimi2.y","jrknr.y","sugu.y",
+                "sunniaasta_p1.y")]
+# 6.57 on täielik link ehk nii eesnimi kui perenimi identsed
+koos2 %>% filter(weights>5.7) %>% summarise(n()) #1763
+koos2<-koos2%>%filter(!is.na(weights))#35863
+```
+
+### 2.3.4 PR tugevad seosed
+
+```{r}
+### TULEMUS õige aastaga x tugevat seost ###
+koos_perenimi100<-koos[koos$perenimi1==1,]#8883
+koos_perenimi100<-koos_perenimi100[koos_perenimi100$weights>4.533136,]#6669
+koos_eesnimi100<-koos[koos$eesnimi1==1,]#29927
+koos_eesnimi100<-koos_eesnimi100[koos_eesnimi100$weights>3.833535,]#7170
+opt<-bind_rows(koos_eesnimi100,koos_perenimi100)%>%
+  arrange(desc(weights))
+opt<-opt%>%
+  distinct(id, .keep_all=T) 
+
+### TULEMUS -1 aastaga 6940 tugevat seost ###
+koos1_perenimi100<-koos1[koos1$perenimi1==1,]#6848
+koos1_perenimi100<-koos1_perenimi100[koos1_perenimi100$weights>4.121349,]#5354
+koos1_eesnimi100<-koos1[koos1$eesnimi1==1,]#30630
+koos1_eesnimi100<-koos1_eesnimi100[koos1_eesnimi100$weights>3.838240,]#5456
+opt1<-bind_rows(koos1_eesnimi100,koos1_perenimi100)%>%
+  arrange(desc(weights))
+opt1<-opt1%>%
+  distinct(id, .keep_all=T) 
+
+### TULEMUS +1 aastaga 4276 tugevat seost ###
+koos2_perenimi100<-koos2[koos2$perenimi1==1,]#2851
+koos2_perenimi100<-koos2_perenimi100[koos2_perenimi100$weights>3.494354,]#2138
+koos2_eesnimi100<-koos2[koos2$eesnimi1==1,]#32239
+koos2_eesnimi100<-koos2_eesnimi100[koos2_eesnimi100$weights>3.796374,]#3851
+opt2<-bind_rows(koos2_eesnimi100,koos2_perenimi100)%>%
+  arrange(desc(weights))
+opt2<-opt2%>%
+  distinct(id, .keep_all=T) 
+```
+
+### 2.3.5 PR sidumiste kokkuvõte
+
+```{r}
+#PR kokkuvõte
+    yhendused<-bind_rows(koos,koos1,koos2)%>%
+    arrange(id)
+saveRDS(yhendused,"pr_sidumine_3tk_erisynniaeg.rds")
+
+    pr_tugevad_seosed <-bind_rows(opt,opt1,opt2)%>%
+    arrange(id) #20031
+saveRDS(pr_tugevad_seosed,"pr_tugevad_seosed.rds")
+```
