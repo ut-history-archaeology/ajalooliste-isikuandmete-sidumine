@@ -11,7 +11,8 @@ Skriptid on jagatud tööetappide järgi:
 - `01_andmete_puhastus.Rmd` – andmete puhastamine ja ettevalmistus
 - `02_andmestike_sidumine.Rmd` – automaatse sidumise protsess
 - `03_sidumistulemuste_hindamine.Rmd` – sidumistulemuste kontroll ja hindamine
-- `04_kohaandmete_analyys.Rmd` – kohaandmete eeltöötlus
+- `04_kontrollandmestiku_p6hjal_hindamine.Rmd` – automaatse sidumise tulemuste hindamine käsitsi loodud kontrollandmestiku põhjal
+- `05_1_kohaandmete_analyys.Rmd` – kohaandmete eeltöötlus
 - `05_tulemuste_analyys.Rmd` – lõplikud analüüsid ja tulemused
 
 Lisaks sisaldab repositoorium käsitsi loodud kontrollandmestikku:
