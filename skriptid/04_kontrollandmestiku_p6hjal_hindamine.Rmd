@@ -1,0 +1,483 @@
+### 5. Käsitsi koostatud kontrollandmestikuga sidumistulemuste võrdlus ja hindamine
+
+Eesmärk: hinnata automaatse sidumise tulemuste kvaliteeti,
+võrreldes neid käsitsi tuvastatud (ground truth) andmetega
+
+## 5.1 Andmete laadimine ja ettevalmistus
+
+
+```{r}
+optantide_andmestik<- read_csv2("optantide_andmestik.csv")
+valim1<- read_csv2("R_tulemus_valim1.csv")
+optantide_andmestik_valim<- read_csv2("R_tulemus_NK_nimekiri_valim.csv")
+isikud<-read_csv2("isikutoimiku_liikmed_nimed.csv")
+
+
+# Lisan sünnikuupäeva info (toimikute põhjal) ja isikute tabeli andmed
+synnikp<-valim1[,c("id","isik_synnipaev","isik_synnikuu","isik_synniaasta","isik_surmapaev","isik_surmakuu","isik_surmaaasta")]
+
+
+optantide_andmestik_valim2 <-optantide_andmestik_valim %>%
+  left_join(synnikp, by = "id")%>%
+  left_join(isikud, by = "id")
+
+```
+
+## 5.2 PR ühendamiste hinnang
+```{r}
+#moodustan ühtse valimi andmestiku
+valim_PR <- optantide_andmestik_valim2 %>%
+  left_join(PR_loplik, by = "id")
+```
+
+
+```{r}
+#1. Märgin juhtumid, kus PR vaste puudub
+valim_PR <- valim_PR %>%
+  mutate(yhendamise_hinnang = if_else(is.na(jrknr.y), "puudub", NA))
+
+#2.Kontrollin täielikku sünnikuupäeva kattuvust
+valim_PR <- valim_PR %>%
+  mutate(
+    oige_synniaeg = case_when(
+      is.na(isik_synnipaev.x) | is.na(isik_synnipaev.y) |
+      is.na(isik_synnikuu.x) | is.na(isik_synnikuu.y) |
+      is.na(isik_synniaasta.x) | is.na(isik_synniaasta.y) ~ NA,
+      isik_synnipaev.x == isik_synnipaev.y &
+      isik_synnikuu.x == isik_synnikuu.y &
+      isik_synniaasta.x == isik_synniaasta.y ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+
+table(valim_PR$oige_synniaeg, useNA = "ifany") 
+
+# 2.1 Märgin täieliku kattuvuse korral tulemuse õigeks
+valim_PR <- valim_PR %>%
+  mutate(
+    yhendamise_hinnang = if_else(
+      oige_synniaeg %in% TRUE,
+      "ÕIGE",
+      yhendamise_hinnang
+    ),
+    yhendamise_hinnang_pohjendus = if_else(
+      oige_synniaeg %in% TRUE,
+      "sünnikuupäevad klapivad täpselt",
+      NA
+    )
+  )
+
+table(valim_PR$yhendamise_hinnang, useNA = "ifany")
+
+#3. Sünniaasta kontroll - kui aasta on vale, siis on kindlalt vale
+valim_PR <- valim_PR %>%
+  mutate(
+    oige_aasta = case_when(
+      is.na(isik_synniaasta.x) | is.na(isik_synniaasta.y) ~ NA,
+      isik_synniaasta.x == isik_synniaasta.y ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+#3.1 sünniaasta ei klapi -> vale
+valim_PR <- valim_PR %>%
+  mutate(
+    yhendamise_hinnang = if_else(
+      oige_aasta %in% FALSE,
+      "VALE",
+      yhendamise_hinnang
+    ),
+    yhendamise_hinnang_pohjendus = if_else(
+      oige_aasta %in% FALSE,
+      "erinev sünniaasta",
+      yhendamise_hinnang_pohjendus
+    ))
+
+#4.Osalise sünniaja kattuvuse analüüs
+valim_PR <- valim_PR %>%
+  mutate(
+    oige_aasta_ja_kuu = case_when(
+      is.na(isik_synnikuu.x) | is.na(isik_synnikuu.y) |
+      is.na(isik_synniaasta.x) | is.na(isik_synniaasta.y) ~ NA,
+      isik_synnikuu.x == isik_synnikuu.y &
+      isik_synniaasta.x == isik_synniaasta.y ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+
+# 4.1 Juhtumite analüüs, kus ainult päev erineb
+kysitav<-valim_PR%>% filter(oige_aasta_ja_kuu==T)%>%filter(oige_synniaeg==F)
+
+#Manuaalne otsus konkreetse juhtumi kohta - üks isik erineb ja see tulemus on vale, lisan hinnangu
+valim_PR <- valim_PR %>%
+  mutate(yhendamise_hinnang = if_else(id == "13314", "VALE",yhendamise_hinnang ),
+  yhendamise_hinnang_pohjendus = if_else(id == "13314", "õige isik suri 1933, pr vast abiellub 2.korda peale seda. Juhtum, kus identne nim, ja isanimi+lähedane sünnikuupäev ja sünnikoht",  yhendamise_hinnang_pohjendus))
+
+# 4.2 Juhtumite analüüs, kus päev ja kuu erineb
+# vaatan neid juhtumeid, kui kuu on vaid 1 võrra erinev
+oige_aasta<-valim_PR%>%filter(oige_aasta==TRUE & is.na(yhendamise_hinnang))%>%
+  mutate(kuuerinevus=isik_synnikuu.x-isik_synnikuu.y)
+table(oige_aasta$kuuerinevus)
+
+## Manuaalsed otsused - kahel isikul on sama sünniaasta, aga kuu erineb 1 võrra, vaatan neid lähemalt
+kysitav1<-oige_aasta%>%filter(kuuerinevus==1)
+
+## kaks isikut: ühel mitu seost ja valed kõik, teine on õige, vanemad klapivad.
+valim_PR <- valim_PR %>%
+  mutate(
+    yhendamise_hinnang = case_when(
+      id == "18135" ~ "VALE",
+      id == "19503" ~ "ÕIGE",
+      TRUE ~ yhendamise_hinnang
+    ),
+    yhendamise_hinnang_pohjendus = case_when(
+      id == "18135" ~ "mitu seost, kõik valed, vale isa nimi sel variandil, mil kp kõige lähemal",
+      id == "19503" ~ "vanemad õiged, kp väike erinevus",
+      TRUE ~ yhendamise_hinnang_pohjendus
+    )
+  )
+
+#5. Need isikud, kellel on olemas valimis sünnikuupäev ja see ei klapi PR tulemustega, arvestades veel eelnevalt läbi vaadatud võimalikke sünnipäeva kõrvale kaldeid, siis need kellel hinnang seni puudub on vale seosed.
+
+valim_PR <- valim_PR %>%
+  mutate(
+    vale_synnikuupaev = is.na(yhendamise_hinnang) & oige_aasta_ja_kuu == FALSE,
+    yhendamise_hinnang = if_else(vale_synnikuupaev, "VALE", yhendamise_hinnang),
+    yhendamise_hinnang_pohjendus = if_else(
+      vale_synnikuupaev,
+      "vale sünnikuupäev_eraldvaadatud väikesed kõrvale kalded",
+      yhendamise_hinnang_pohjendus
+    )
+  ) %>%
+  select(-vale_synnikuupaev)
+
+### vaatan palju on alles ilma hinnanguta
+table(valim_PR$yhendamise_hinnang, useNA = "ifany")
+table(valim_PR$yhendamise_hinnang_pohjendus, useNA = "ifany")
+
+hinnanguta<-valim_PR%>%filter(is.na(yhendamise_hinnang))
+
+# 6. erijuhtumied (pereliikmete klappimine)
+
+# 6.1 ühendatud isik on vale abikaasaga, veapõhjus, arvestatud neipõlvenimega, abielud enne opteerimist (1910/1912) ja saabusid koos abikaasaga, ehk opteerimis nimekirjas juba perekonna nimi pärast abiellumist
+
+valim_PR <- valim_PR %>%
+  mutate(
+    yhendamise_hinnang = if_else(
+      id %in% c("11738","12738"),
+      "VALE",
+      yhendamise_hinnang
+    ),
+    yhendamise_hinnang_pohjendus = if_else(
+      id %in% c("11738","12738"),
+      "ühendatud vale abikaasaga",
+      yhendamise_hinnang_pohjendus))
+
+#vaatan palju on alles ilma hinnanguta
+table(valim_PR$yhendamise_hinnang, useNA = "ifany")
+table(valim_PR$yhendamise_hinnang_pohjendus, useNA = "ifany")
+
+#vaatan käsitsi läbi ilma hinnanguta jäänud isikud
+kysitav2<-valim_PR%>%filter(is.na(yhendamise_hinnang))
+
+valim_PR <- valim_PR %>%
+  mutate(
+    yhendamise_hinnang = case_when(
+      id %in% c("11216","12739") ~ "VALE",
+      id == "25691" ~ "VALE",
+      id %in% c("29068","29069","29070","29071") ~ "VALE",
+      id == "17932" ~ "?",
+      id == "36782" ~ "VALE",
+      id == "36781" ~ "ÕIGE",
+      id == "24" ~ "?",
+      TRUE ~ yhendamise_hinnang
+    ),
+    yhendamise_hinnang_pohjendus = case_when(
+      id %in% c("11216","12739") ~ "valed vanemad, ühendatud perenime järgi peale abiellumist, aga isik on alles laps",
+      id == "25691" ~ "valed vanemad",
+      id %in% c("29068","29069","29070","29071") ~ "perekond valesti kõik ühendatud - opteerub naine koos lastega, aga ei õnnestu leida, mis oleks õiged andmed, need andmed ei klapi",
+      id == "17932" ~ "üksik naine, tõenäoliselt vale, kuna sünnikoht ei klapi NK nimekirja päritolukohaga",
+      id == "36782" ~ "valed vanemad (isa on nimekaim, kes on sündinud samas vallas ja samal sünniaastal, aga sünnikuupäev on vale)",
+      id == "36781" ~ "vanemad õiged",
+      id == "24" ~ "pole piisavalt infot",
+      TRUE ~ yhendamise_hinnang_pohjendus
+    )
+  )
+
+#vaatan palju on alles ilma hinnanguta
+table(valim_PR$yhendamise_hinnang, useNA = "ifany")
+table(valim_PR$yhendamise_hinnang_pohjendus, useNA = "ifany")
+```
+
+#### 5.2.1. määran hindamiskvaliteedi klassid PR andmestikule
+
+### PR hindamiskvaliteedi tulemused
+
+```{r}
+#vaatan palju on alles ilma hinnanguta
+table(valim_PR$yhendamise_hinnang,valim_PR$hindamiskvaliteet, useNA = "ifany")
+
+#kõik seosed ilma puuduvatetat
+table(valim_PR$yhendamise_hinnang,valim_PR$hindamiskvaliteet)
+
+prop.table(
+  table(valim_PR$yhendamise_hinnang, valim_PR$hindamiskvaliteet),
+  margin = 2
+) * 100
+```
+
+## 5.3 RR ühendamiste hinnang
+```{r}
+#moodustan ühtse valimi andmestiku
+valim_RR <- optantide_andmestik_valim2 %>%
+  left_join(RR_loplik, by = "id")
+```
+
+```{r}
+#1. Märgin juhtumid, kus RR vaste puudub
+valim_RR <- valim_RR %>%
+  mutate(yhendamise_hinnang = if_else(is.na(C2_ISIKU_VIIDE.y), "puudub", NA))
+
+#viin RR sünnikuupäevad võrreldavasse vormingusse
+valim_RR <- valim_RR %>%
+  mutate(
+    a1_SynniKP = as.character(a1_SynniKP),
+    isik_synniaasta.y = as.numeric(substr(a1_SynniKP, 1, 4)),
+    isik_synnikuu.y   = as.numeric(substr(a1_SynniKP, 5, 6)),
+    isik_synnipaev.y  = as.numeric(substr(a1_SynniKP, 7, 8)))
+#viin RR surmakuupäevad võrreldavasse vormingusse
+valim_RR <- valim_RR %>%
+  mutate(
+    a1_SurmaKP = as.character(a1_SurmaKP),
+    isik_surmaaasta.y = as.numeric(substr(a1_SurmaKP, 1, 4)),
+    isik_surmakuu.y   = as.numeric(substr(a1_SurmaKP, 5, 6)),
+    isik_surmapaev.y  = as.numeric(substr(a1_SurmaKP, 7, 8)))
+
+#2.Kontrollin täielikku sünnikuupäeva kattuvust
+valim_RR <- valim_RR %>%
+  mutate(
+    oige_synniaeg = case_when(
+      is.na(isik_synnipaev) | is.na(isik_synnipaev.y) |
+      is.na(isik_synnikuu) | is.na(isik_synnikuu.y) |
+      is.na(isik_synniaasta) | is.na(isik_synniaasta.y) ~ NA,
+      isik_synnipaev == isik_synnipaev.y &
+      isik_synnikuu == isik_synnikuu.y &
+      isik_synniaasta == isik_synniaasta.y ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+table(valim_RR$oige_synniaeg, useNA = "ifany") 
+
+# 2.1 Märgin täieliku kattuvuse korral tulemuse õigeks
+valim_RR <- valim_RR %>%
+  mutate(
+    yhendamise_hinnang = if_else(
+      is.na(yhendamise_hinnang) & oige_synniaeg %in% TRUE,
+      "ÕIGE",yhendamise_hinnang    ),
+    yhendamise_hinnang_pohjendus = if_else(
+      oige_synniaeg %in% TRUE,
+      "sünnikuupäevad klapivad täpselt",NA  )
+  )
+table(valim_RR$yhendamise_hinnang, useNA = "ifany")
+table(valim_RR$yhendamise_hinnang_pohjendus, useNA = "ifany")
+
+#3. Sünniaasta kontroll - kui aasta on vale, siis on kindlalt vale
+valim_RR <- valim_RR %>%
+  mutate(
+    oige_aasta = case_when(
+      is.na(isik_synniaasta) | is.na(isik_synniaasta.y) ~ NA,
+      isik_synniaasta == isik_synniaasta.y ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+#3.1 sünniaasta ei klapi -> vale
+valim_RR <- valim_RR %>%
+  mutate(
+    yhendamise_hinnang = if_else(
+     is.na(yhendamise_hinnang) &  oige_aasta %in% FALSE,
+      "VALE",
+      yhendamise_hinnang
+    ),
+    yhendamise_hinnang_pohjendus = if_else(
+      is.na(yhendamise_hinnang_pohjendus) & oige_aasta %in% FALSE,
+      "erinev sünniaasta",
+      yhendamise_hinnang_pohjendus
+    ))
+
+#4.Osalise sünniaja kattuvuse analüüs
+valim_RR <- valim_RR %>%
+  mutate(
+    oige_aasta_ja_kuu = case_when(
+      is.na(isik_synnikuu) | is.na(isik_synnikuu.y) |
+      is.na(isik_synniaasta) | is.na(isik_synniaasta.y) ~ NA,
+      isik_synnikuu == isik_synnikuu.y &
+      isik_synniaasta == isik_synniaasta.y ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+
+# 4.1 Juhtumite analüüs, kus ainult päev erineb
+kysitav<-valim_RR%>% filter(oige_aasta_ja_kuu==TRUE)%>%filter(oige_synniaeg==FALSE)
+
+# 4.2 Päevade vahe arvutamine
+valim_RR <- valim_RR %>%
+  mutate(
+    paeva_vahe = case_when(
+      is.na(isik_synnipaev) | is.na(isik_synnipaev.y) ~ NA,
+      TRUE ~ abs(isik_synnipaev - isik_synnipaev.y)
+    )
+  )
+# 4.3 Loen õigeks need, kus päev erineb maksimaalselt 1 võrra
+valim_RR <- valim_RR %>%
+  mutate(
+    yhendamise_hinnang = if_else(
+      is.na(yhendamise_hinnang) & oige_aasta_ja_kuu == TRUE & paeva_vahe <= 1,
+      "ÕIGE",
+      yhendamise_hinnang
+    ),
+    yhendamise_hinnang_pohjendus = if_else(
+      is.na(yhendamise_hinnang_pohjendus) & oige_aasta_ja_kuu == TRUE & paeva_vahe <= 1,
+      "sünniaeg klapib (päeva erinevus ±1)",
+      yhendamise_hinnang_pohjendus
+    )
+  )
+
+#vaatan allesjäänuid 
+kysitav<-valim_RR%>% filter(oige_aasta_ja_kuu==TRUE)%>%filter(oige_synniaeg==FALSE)%>%filter(is.na(yhendamise_hinnang))
+
+#Manuaalne otsus konkreetse juhtumi kohta - üks isik erineb ja see tulemus on vale, lisan hinnangu
+valim_RR <- valim_RR %>%
+  mutate(yhendamise_hinnang = if_else(id == "9751", "VALE",yhendamise_hinnang ),
+  yhendamise_hinnang_pohjendus = if_else(id == "9751", "nimekaim, perekond ja sünnikoht vale, PR õige ühendus olemas",  yhendamise_hinnang_pohjendus))
+
+valim_RR <- valim_RR %>%
+  mutate(
+    yhendamise_hinnang = if_else(id %in% c("20208", "12136"),"ÕIGE", yhendamise_hinnang),
+    yhendamise_hinnang_pohjendus = if_else(id %in% c("20208", "12136"),"sünnikuupäeva erinevus uus vs vanakalender",yhendamise_hinnang_pohjendus) )
+
+valim_RR <- valim_RR %>%
+  mutate(yhendamise_hinnang = if_else(id == "13314", "VALE",yhendamise_hinnang ),
+  yhendamise_hinnang_pohjendus = if_else(id == "13314", "vale surmaaeg",  yhendamise_hinnang_pohjendus))
+
+table(valim_RR$yhendamise_hinnang,valim_RR$sidumis_aasta.y, useNA = "ifany")
+
+#5.Kontrollin surmakuupäeva kattuvust
+valim_RR <- valim_RR %>%
+  mutate(
+    oige_surmaaeg = case_when(
+      is.na(isik_surmapaev) | is.na(isik_surmapaev.y) |
+      is.na(isik_surmakuu) | is.na(isik_surmakuu.y) |
+      is.na(isik_surmaaasta) | is.na(isik_surmaaasta.y) ~ NA,
+      isik_surmapaev == isik_surmapaev.y &
+      isik_surmakuu == isik_surmakuu.y &
+      isik_surmaaasta == isik_surmaaasta.y ~ TRUE,
+      TRUE ~ FALSE) )
+table(valim_RR$oige_surmaaeg)
+
+valim_RR <- valim_RR %>%
+  mutate(
+    yhendamise_hinnang = if_else(
+      is.na(yhendamise_hinnang) & oige_surmaaeg %in% TRUE,
+      "ÕIGE_ilma_aasta",yhendamise_hinnang    ),
+    yhendamise_hinnang_pohjendus = if_else(
+      is.na(yhendamise_hinnang_pohjendus) & oige_surmaaeg %in% TRUE,
+      "surmakuupäevad klapivad täpselt",yhendamise_hinnang_pohjendus  )
+  )
+
+table(valim_RR$yhendamise_hinnang_pohjendus, useNA = "ifany")
+table(valim_RR$yhendamise_hinnang, useNA = "ifany")
+
+valim_RR <- valim_RR %>%
+  mutate(yhendamise_hinnang = if_else(is.na(yhendamise_hinnang) & sidumis_aasta.x=="ilma_aasta", "puudub_seotud ilma aastata",yhendamise_hinnang ))
+
+table(valim_RR$yhendamise_hinnang, useNA = "ifany")
+table(valim_RR$yhendamise_hinnang_pohjendus, useNA = "ifany")
+
+kysitav2<-valim_RR%>%filter(is.na(yhendamise_hinnang))
+kysitav2<-kysitav2[,c(1,39:41,124:126)]
+
+valim_RR <- valim_RR %>%
+  mutate(
+    yhendamise_hinnang = case_when(
+      
+      # 1. Kui sünniaasta puudub → puudub info
+      is.na(yhendamise_hinnang) & is.na(isik_synniaasta) ~ "puudub",
+      
+      # 2. Käsitsi õiged
+      is.na(yhendamise_hinnang) & id == 4207 ~ "ÕIGE",
+      
+      # 3. Käsitsi valed
+      is.na(yhendamise_hinnang) & id %in% c(18135, 21140) ~ "VALE",
+      
+      # muu jääb samaks
+      TRUE ~ yhendamise_hinnang
+    ),
+    
+    yhendamise_hinnang_pohjendus = case_when(
+      
+      # puudub info
+      is.na(yhendamise_hinnang_pohjendus) & is.na(isik_synniaasta) ~ "puudub sünniaasta, ebapiisav info",
+      
+      # käsitsi õige
+      is.na(yhendamise_hinnang_pohjendus) & id == 4207 ~ "1 päeva erinevus",
+      
+      # käsitsi vale
+      is.na(yhendamise_hinnang_pohjendus) & id %in% c(18135, 21140) ~ "sünnikuupäev ei klapi",
+      
+      TRUE ~ yhendamise_hinnang_pohjendus
+    )
+  )
+
+
+
+#vaatasin alles jäänud kp erinevused üle
+      valim_RR <- valim_RR %>%
+  mutate(
+    yhendamise_hinnang = case_when(
+      
+      is.na(yhendamise_hinnang) & oige_aasta_ja_kuu == FALSE ~ "VALE",
+      
+      TRUE ~ yhendamise_hinnang
+    ),
+    
+    yhendamise_hinnang_pohjendus = case_when(
+      
+      is.na(yhendamise_hinnang_pohjendus) & oige_aasta_ja_kuu == FALSE ~ 
+        "vale sünnikuupäev_eraldvaadatud väikesed kõrvale kalded",
+      
+      TRUE ~ yhendamise_hinnang_pohjendus
+    )
+  )
+
+table(valim_RR$yhendamise_hinnang, useNA = "ifany")
+table(valim_RR$yhendamise_hinnang_pohjendus, useNA = "ifany")
+```
+#### 5.2.1. määran hindamiskvaliteedi klassid RR andmestikule
+
+### RR hindamiskvaliteedi tulemused
+
+```{r}
+#vaatan palju on alles ilma hinnanguta
+table(valim_RR$yhendamise_hinnang,valim_RR$hindamiskvaliteet, useNA = "ifany")
+
+#kõik seosed ilma puuduvatetat
+table(valim_RR$yhendamise_hinnang,valim_RR$hindamiskvaliteet)
+
+prop.table(
+  table(valim_RR$yhendamise_hinnang, valim_RR$hindamiskvaliteet),
+  margin = 2
+) * 100
+
+a<-valim_RR%>%filter(sidumis_aasta.x=="ilma_aasta")
+```
+#Lõplik andmestik, ainult kvaliteediklass 1 ja 2
+```{r}
+PR_loplik1_2<-PR_loplik%>%filter(hindamiskvaliteet<=2)
+RR_loplik1_2<-RR_loplik%>%filter(hindamiskvaliteet<=2)%>%filter(sidumis_aasta.x!="ilma_aasta")
+
+write_csv(PR_loplik1_2, "PR_loplik1_2.csv")
+write_csv(RR_loplik1_2, "RR_loplik1_2.csv")
+
+table(RR_loplik1_2$hindamiskvaliteet)
+      table(PR_loplik1_2$hindamiskvaliteet)
+
+      
