@@ -1,5 +1,5 @@
 ---
-title: "tulemuste analüüs"
+title: "Kohaandmete puhastamine ja standardiseerimine"
 output: html_document
 date: "2026-04-06"
 ---
@@ -425,7 +425,7 @@ PR <- PR %>%
   ) %>%
   select(-maakond_kihelkond)
 
-#vaatan mis seis on
+# Kontrollin allesjäänud määramata omavalitsusi
 PR %>% count(maakond_raamatu_omavalitsus,sort = TRUE)#827 tühi
 tyhi<-PR %>% filter(is.na(maakond_raamatu_omavalitsus))
 tyhi %>% count(raamatu_omavalitsus_puhas,sort = TRUE)
@@ -445,7 +445,7 @@ PR <- PR %>%
 
 ```
 
-#salvestan üle
+# Salvestan puhastatud andmestiku
 ```{r}
 
 write_csv(PR, "PR_loplik1_2_valitud_tulbad.csv")
