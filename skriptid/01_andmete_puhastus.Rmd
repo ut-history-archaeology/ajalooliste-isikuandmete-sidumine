@@ -9,7 +9,7 @@ editor_options:
     wrap: 72
 ---
 
-I etapis viisin läbi kolme andmestiku (optantide andmestik,
+I etapis viisin läbi kolme andmestiku (Narvakarantiini andmestik ehk optantide andmestik,
 Rahvastikuregistri arhiiv ja Pereregister) puhastamise ja ühtlustamise,
 eesmärgiga valmistada need ette tõenäosuslikuks sidumiseks.
 
@@ -19,7 +19,7 @@ teatud tähevariatsioonid (nt š, ž, w), et vähendada ortograafilist
 varieeruvust. Vajalik, kuna nimede kirjapildis on märkimisväärseid
 erinevusi.
 
-Optantide andmestikus ontuletatud sünniaasta vanuse ja saabumisaasta
+Optantide andmestikus on tuletatud sünniaasta vanuse ja saabumisaasta
 põhjal, arvestades võimalikku ±1-aastast viga.
 
 Kõigis andmestikes jaotati mitmeosalised ees- ja perenimed eraldi
@@ -52,7 +52,7 @@ library(dplyr)
 
 ```{r}
 # Andmete sisse lugemine
-optandid <- read_excel("C:/Users/hakar/Desktop/magistritöö materjalid/MAGISTRITÖÖ/ANDMEBAAS/optantide andmebaasVIIMANE.xlsx")
+optandid <- read_excel("data/optantide_andmebaas.xlsx")
 
 # Nimede ühtlustamine (suurtähed ja tühikute eemaldamine)
 optandid$perekonnanimi <- as.character(toupper(optandid$perekonnanimi))
