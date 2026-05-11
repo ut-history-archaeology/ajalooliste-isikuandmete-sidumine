@@ -1,5 +1,5 @@
 ---
-title: "tulemuste analüüs"
+title: "Seotud andmestike analüüs"
 output: html_document
 date: "2026-04-06"
 ---
@@ -14,7 +14,7 @@ library(sf)
 library(ggplot2)
 ```
 
-#ANDMESTIKDU
+#ANDMESTIKUD
 ```{r}
 PR <- read_csv("PR_loplik1_2_valitud_tulbad.csv")
 
@@ -22,7 +22,7 @@ PR <- read_csv("PR_loplik1_2_valitud_tulbad.csv")
 PR <- PR %>% group_by(jrknr.y) %>% filter(n_distinct(id) == 1) %>% ungroup()
 
 RR <- read_csv2("RR_loplik1_2_valitud_tulbad.csv")
-#eemaldan kõik need juhud, kus PR kirjega on saanud sama vaste mitu erinevat NK andmesitiku isikut
+#eemaldan kõik need juhud, kus RR kirjega on saanud sama vaste mitu erinevat NK andmesitiku isikut
 RR <- RR %>% group_by(C2_ISIKU_VIIDE.y) %>% filter(n_distinct(id) == 1) %>% ungroup()
 
 ```
@@ -232,7 +232,7 @@ RR%>%count(a1_Synnikoht_tase0_tekst,sort = TRUE)%>%# rr tulemus 1182 Venemaa, ee
 #vaatan kas yhis tulemuses kui PR sünnikoht puudu, kas see siis RR andmetena olemas
 x<-loplik_tulem %>%
   filter(is.na(synniriik_loplik) & !is.na(a1_Synnikoht_tase0_tekst)) 
-  # vaatlusel on andmed sama koha kohta, lihtsalt PR vigasem väärtus
+
 loplik_tulem <- loplik_tulem %>%  mutate(synniriik_loplik = if_else(
       is.na(synniriik_loplik),  a1_Synnikoht_tase0_tekst, synniriik_loplik) )
 
@@ -247,45 +247,6 @@ PR %>%   count(synniriik_loplik, sort = TRUE) %>%
 ## Venemaal sündinute vanuseline jaotis 
 
 ```{r}
-#vanusgrupid
-loplik_tulem <- loplik_tulem %>%
-  mutate(vanus_5 = cut(vanus,
-      breaks = seq(0, 85, by = 5),
-      right = FALSE,include.lowest = TRUE))
-PR<- PR %>%
-  mutate(vanus_5 = cut(vanus,
-      breaks = seq(0, 85, by = 5),
-      right = FALSE,include.lowest = TRUE))
-
-optantide_andmestik<-optantide_andmestik%>%
-    mutate(vanus_5 = cut(vanus,
-      breaks = seq(0, 85, by = 5),
-      right = FALSE,include.lowest = TRUE))
-  
-#aint venemaal sündinud
-venemaa_yhis <- loplik_tulem %>%
-  filter(synniriik_loplik == "Venemaa") %>%
-  filter(!is.na(vanus))
-
-venemaa_PR <- PR %>%
-  filter(synniriik_loplik == "Venemaa") %>%
-  filter(!is.na(vanus))
-
-
-#vaatan eraldi kuidas pr jaotub sugu
-ggplot(venemaa_PR, aes(x = vanus_5, fill = sugu_NK)) +
-  geom_bar(aes(y = after_stat(count) / sum(after_stat(count)) * 100)) +
-  labs(
-    title = "Venemaal sündinud isikute vanuseline jaotus soo järgi (%)",
-    x = "Vanuserühm",
-    y = "Protsent kogu rühmast",
-    fill = "Sugu"
-  ) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-#--------------------------------------------------------------------------
-#SIIN ON ÕIGE JOONIS VENEMAAL SÜNDINUTE VANUSELINE JAOTUS VS TERVIK JAOTUS NK
 # NK (optandid)
 opt_line <- optantide_andmestik %>%
   count(vanus_5) %>%
@@ -301,7 +262,6 @@ pr_line <- venemaa_PR %>%
     protsent = n / sum(n) * 100,
     allikas = "PR (Venemaal sündinud)"
   )
-
 
 # tulem yhis (Venemaal sündinud)
 yhis_line <- venemaa_yhis %>%
@@ -421,59 +381,7 @@ tabel_abielu <- kokku %>%
   left_join(sugu_abielu, by = c("perega", "abielu_kateg")) %>%
   arrange(perega, abielu_kateg)
 
-# =====================================================
-# 3. GRAAFIK – VANUSE MÕJU (KUI VAJA)
-# =====================================================
-
-plot_data <- PR_taiskasvanud %>%
-  filter(!is.na(vanus_5_label)) %>%
-  count(sugu_NK, vanus_5_label, abielu_kateg) %>%
-  group_by(sugu_NK, vanus_5_label) %>%
-  mutate(protsent = n / sum(n) * 100) %>%
-  ungroup()
-
-# vanuserühmade järjestus
-plot_data$vanus_5_label <- factor(
-  plot_data$vanus_5_label,
-  levels = c("15–19","20–24","25–29","30–34","35–39",
-             "40–44","45–49","50–54","55–59","60–64",
-             "65–69","70–74")
-)
-
-# graafik
-ggplot(plot_data, aes(x = vanus_5_label, y = protsent, fill = abielu_kateg)) +
-  
-  geom_col(width = 0.9, colour = "white", linewidth = 0.2) +
-  
-  facet_wrap(~ sugu_NK) +
-  
-  scale_fill_manual(
-    values = c(
-      "Abiellus enne" = "#2ca25f",
-      "Abiellus pärast" = "#de2d26",
-      "Ei abiellunud" = "grey80"
-    )
-  ) +
-  
-  scale_y_continuous(limits = c(0, 100), expand = c(0, 0)) +
-  
-  labs(
-    title = "Abielu ajastus vanuserühmade ja soo lõikes",
-    x = "Vanuserühm",
-    y = "Osakaal (%)",
-    fill = "Abielu ajastus"
-  ) +
-  
-  theme_minimal(base_size = 10) +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor = element_blank(),
-    legend.position = "bottom",
-    strip.text = element_text(size = 12, face = "bold")
-  )
 ```
-
 
 
 #ELUKOHT
@@ -521,8 +429,7 @@ PR39 <- PR %>%
 ```
 
 
-
-, see annab võrdluse NK soovitud elukohaga.   ehk 
+ELUKOHT
 ```{r}
 library(dplyr)
 
@@ -605,169 +512,3 @@ voog_top <- voog %>%
   mutate(protsent = n / sum(n) * 100)
   
 ```
-
-
-#SURMAKOTH
-```{r}
-# =====================================================
-# 1. RR SURMAKOHT (ühis ja RR eraldi)
-# =====================================================
-
-# Ühise valimi RR surmakoht
-loplik_tulem %>%
-  count(a1_Surmakoht_tase0_tekst, sort = TRUE) %>%
-  mutate(protsent = round(n / sum(n) * 100, 1))
-
-# RR kogu valim
-RR %>%
-  count(a1_Surmakoht_tase0_tekst, sort = TRUE) %>%
-  mutate(protsent = round(n / sum(n) * 100, 1))
-
-# PR kogu valim
-PR %>%
-  count(isik_surmakoht, sort = TRUE) %>%
-  mutate(protsent = round(n / sum(n) * 100, 1))
-
-# =====================================================
-# 2. PR SURMAKOHT (puuduvate täitmine RR abil)
-# =====================================================
-
-# kontroll: kus RR puudub, aga PR olemas
-x_surma <- loplik_tulem %>%
-  filter(is.na(a1_Surmakoht_tase0_tekst) & !is.na(isik_surmakoht))
-x_surma<-x_surma[,52]
-# täida PR puuduvad väärtused RR põhjal
-loplik_tulem <- loplik_tulem %>%
-  mutate(
-    surmariik_loplik = if_else(
-      is.na(surmariik_loplik),
-      a1_Surmakoht_tase0_tekst,
-      surmariik_loplik
-    )
-  )
-
-
-# =====================================================
-# 3. ÜHISE TULEMI SURMAKOHT (PR + RR parandatud)
-# =====================================================
-
-loplik_tulem %>%
-  count(surmariik_loplik, sort = TRUE) %>%
-  mutate(protsent = round(n / sum(n) * 100, 1))
-
-
-# =====================================================
-# 4. PR TULEM (kõik isikud)
-# =====================================================
-
-PR %>%
-  count(surmariik_loplik, sort = TRUE) %>%
-  mutate(protsent = round(n / sum(n) * 100, 1))
-```
-
-
-
-
-
-
-
-
-
-
-kas mul olemas surma andmed?
-```{r}
-table(x$a1_Surmakoht_tase0_tekst,useNA = "ifany") # rr tulemus enamus eestis surnud, 657 puudu -> kas need pole eestis surnud
-#table(x$a1_SurmaKP,useNA = "ifany") #rr enamusel olemas surmaaeg
-table(x$isik_surmaaasta,useNA = "ifany") #pr puudu 4162
-table(x$isik_surmariik,useNA = "ifany") #pr märgitud vaid surmakoht kui on eestis
-
-
-#PR
-table(PR$isik_surmaaasta,useNA = "ifany") #pr puudu 10651
-table(PR$isik_surmakoht,useNA = "ifany") #pr märgitud vaid surmakoht, MITTE RIIK kui on eestis
-
-#RR
-table(RR$a1_Surmakoht_tase0_tekst,useNA = "ifany") # rr tulemus enamus eestis surnud, üksikud märgitud välismaal, samas 837 puudu
-#table(RR$a1_SurmaKP,useNA = "ifany") #rr enamusel olemas surmaaeg
-```
-
-kas mul olemas SÜNNIAEG JA SÜNNIKOHT andmed? vaatan ainult PR
-```{r}
-
-
-## PR tulem venemaa asukoht
-PR <- PR %>%
-  mutate(
-    vanus_5 = cut(
-      sunniaasta,
-      breaks = seq(1846, 1922, by = 5),
-      right = FALSE,
-      include.lowest = TRUE
-    )
-  )
-venemaa <- PR %>%
-  filter(synniriik_loplik == "Venemaa") %>%
-  filter(!is.na(vanus_5))
-
-ggplot(venemaa, aes(x = vanus_5)) +
-  geom_bar(aes(y = (..count..)/sum(..count..)*100)) +
-  labs(
-    title = "Venemaal sündinud isikute vanuseline jaotus (%)",
-    x = "Vanuserühm",
-    y = "Protsent"
-  ) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-
-venemaa_rr<- loplik_tulem%>%filter(a1_Synnikoht_tase0_tekst=="Venemaa")
-venemaa_pr<- loplik_tulem%>%filter(isik_synniriik=="VENEMAA")
-venemaa_pr <- x %>%
-  filter(grepl("^VENEMAA", isik_synniriik))
-
-xx<-x %>%
-  filter(a1_Synnikoht_tase0_tekst == "Eesti" &
-         isik_synniriik == "VENEMAA")
-
-VENEMAA<-x%>%filter(a1_Synnikoht_tase0_tekst=="Venemaa"&isik_synniriik=="VENEMAA")
-
-table(VENEMAA$`riik pärit`,useNA = "ifany")
-```
-
-kuidas eesti elukoht jaoitud
-```{r}
-table(x$raamatu_omavalitsus,useNA = "ifany")
-
-df <- as.data.frame(table(x$raamatu_omavalitsus))
-df[order(-df$Freq), ]
-
-tab <- table(x$raamatu_omavalitsus)
-
-yy<-data.frame(
-  omavalitsus = names(tab),
-  arv = as.vector(tab),
-  protsent = round(prop.table(tab) * 100, 1)
-)[order(-tab), ]
-```
-
-```{r}
-tab <- table(venemaa_pr$vanus)
-
-y<-data.frame(
-  vanus = names(tab),
-  arv = as.vector(tab),
-  protsent = round(prop.table(tab) * 100, 1)
-)[order(-tab), ]
-
-#surma aastad
-tabb <- table(x$surmaaasta)
-
-yx<-data.frame(
-  omavalitsus = names(tabb),
-  arv = as.vector(tabb),
-  protsent = round(prop.table(tabb) * 100, 1)
-)[order(-tabb), ]
-
-table(x$`kuhu elama suundus_allikas`,useNA = "ifany")
-```
-
